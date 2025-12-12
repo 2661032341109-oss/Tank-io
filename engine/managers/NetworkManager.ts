@@ -1,81 +1,89 @@
 
-import { ServerRegion, GameMode, FactionType, WorldSnapshot } from '../../types';
+import { ServerRegion, GameMode, FactionType } from '../../types';
+import { db, auth } from '../../firebase';
+import { ref, set, onValue, onDisconnect, push, update, remove, onChildAdded, onChildRemoved } from "firebase/database";
 
 type NetworkEventHandler = (data: any) => void;
 
-/**
- * UNIVERSAL NETWORK BRIDGE
- * This manager handles the logic for connecting to game servers.
- * It intelligently switches between "Local Mock Mode" (Client-Side)
- * and "Online Mode" (WebSocket) based on the server URL.
- */
 export class NetworkManager {
     private handlers: Record<string, NetworkEventHandler[]> = {};
-    private socket: WebSocket | null = null;
     private isConnected: boolean = false;
-    private isMockMode: boolean = true; 
+    private isMockMode: boolean = false; 
+    private myId: string | null = null;
+    private roomRef: any = null;
+    private playerRef: any = null;
 
-    // Mock Simulation Timers
-    private mockJoinInterval: number | null = null;
-    private mockLeaveInterval: number | null = null;
-    
-    // Throttling Input sending (to 30fps)
+    // Throttling
     private lastInputSendTime: number = 0;
-    private readonly INPUT_RATE = 1000 / 30; 
+    private lastSlowUpdateSendTime: number = 0;
+    private readonly INPUT_RATE = 1000 / 20; // 20 updates per second (Position)
+    private readonly SLOW_UPDATE_RATE = 500; // 2 updates per second (HP, Score, Class)
 
     constructor() {}
 
-    /**
-     * Connects to a game server.
-     */
     connect(region: ServerRegion, playerInfo: { name: string; tank: string; mode: GameMode; faction: FactionType }) {
-        console.log(`[NET] Initiating connection to ${region.name} (${region.url})...`);
+        console.log(`[NET] Connecting to ${region.name}...`);
         
         this.isMockMode = region.type === 'LOCAL';
 
         if (this.isMockMode) {
-            this.startMockSimulation(playerInfo);
+            this.startMockSimulation();
         } else {
-            this.startRealConnection(region.url, playerInfo);
+            this.startFirebaseConnection(playerInfo);
         }
     }
 
     disconnect() {
-        if (this.isMockMode) {
-            this.stopMockSimulation();
-        } else {
-            if (this.socket) {
-                this.socket.close();
-                this.socket = null;
-            }
+        if (this.playerRef) {
+            remove(this.playerRef);
+            this.playerRef = null;
         }
         this.isConnected = false;
         console.log("[NET] Disconnected.");
     }
 
-    /**
-     * Sends input data to server. Throttled to save bandwidth.
-     */
-    sendInput(inputData: { x: number, y: number, fire: boolean, angle: number }) {
-        if (this.isMockMode) return;
-
+    // --- REALTIME: Fast Sync (Pos, Rot) ---
+    syncPlayerState(pos: {x: number, y: number}, rotation: number) {
+        if (this.isMockMode || !this.playerRef) return;
+        
         const now = Date.now();
         if (now - this.lastInputSendTime < this.INPUT_RATE) return;
         this.lastInputSendTime = now;
 
-        this.send('i', inputData); // 'i' for Input packet
+        update(this.playerRef, {
+            x: Math.round(pos.x),
+            y: Math.round(pos.y),
+            r: parseFloat(rotation.toFixed(2))
+        });
     }
 
-    /**
-     * Generic send function
-     */
-    send(type: string, data: any) {
-        if (this.isMockMode) return;
+    // --- REALTIME: Slow Sync (HP, Score, Class) ---
+    // Called from GameEngine.update()
+    syncPlayerDetails(health: number, maxHealth: number, score: number, classPath: string) {
+        if (this.isMockMode || !this.playerRef) return;
 
-        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-            // In a real app, use MessagePack or Protobuf for binary efficiency
-            this.socket.send(JSON.stringify({ t: type, d: data }));
-        }
+        const now = Date.now();
+        if (now - this.lastSlowUpdateSendTime < this.SLOW_UPDATE_RATE) return;
+        this.lastSlowUpdateSendTime = now;
+
+        update(this.playerRef, {
+            hp: Math.round(health),
+            maxHp: Math.round(maxHealth),
+            score: Math.floor(score),
+            classPath: classPath
+        }).catch(err => console.warn("Sync details error", err));
+    }
+
+    sendChat(message: string, sender: string) {
+        if (this.isMockMode) return;
+        if (!this.roomRef) return;
+
+        const chatRef = ref(db, 'rooms/public/chat');
+        push(chatRef, {
+            sender: sender,
+            content: message,
+            timestamp: Date.now()
+        });
     }
 
     on(event: string, handler: NetworkEventHandler) {
@@ -91,86 +99,118 @@ export class NetworkManager {
         }
     }
 
-    // --- REAL WEBSOCKET LOGIC ---
+    // --- FIREBASE RTDB LOGIC ---
 
-    private startRealConnection(url: string, playerInfo: any) {
-        try {
-            this.socket = new WebSocket(url);
-            this.socket.binaryType = "arraybuffer"; 
-
-            this.socket.onopen = () => {
-                this.isConnected = true;
-                console.log("[NET] WebSocket Connected!");
-                this.send('handshake', playerInfo);
-                this.emit('connected', {});
-            };
-
-            this.socket.onmessage = (event) => {
-                try {
-                    const msg = JSON.parse(event.data);
-                    // Handle 'u' (Update) packets efficiently
-                    if (msg.t === 'u') {
-                        this.emit('world_update', msg.d);
-                    } else {
-                        this.emit(msg.t, msg.d);
-                    }
-                } catch (e) {
-                    console.error("Invalid packet:", event.data);
-                }
-            };
-
-            this.socket.onclose = () => {
-                this.isConnected = false;
-                this.emit('disconnected', {});
-                console.log("[NET] Connection lost.");
-            };
-
-            this.socket.onerror = (err) => {
-                console.error("[NET] WebSocket Error:", err);
-                this.emit('error', { message: "Connection Error" });
-            };
-
-        } catch (e) {
-            console.error("[NET] Failed to create WebSocket:", e);
-            this.emit('error', { message: "Connection Failed" });
-        }
-    }
-
-    // --- MOCK SIMULATION LOGIC (Client-Side Only) ---
-
-    private startMockSimulation(playerInfo: any) {
-        console.log("[NET] Starting Local Sandbox Environment...");
-        this.isConnected = true;
+    private startFirebaseConnection(playerInfo: { name: string; tank: string; mode: GameMode; faction: FactionType }) {
+        const userId = auth.currentUser ? auth.currentUser.uid : `guest_${Math.random().toString(36).substr(2, 5)}`;
+        this.myId = userId;
         
-        setTimeout(() => {
-            this.emit('connected', {});
-        }, 100);
+        // Use a single public room for now
+        const roomPath = 'rooms/public';
+        this.roomRef = ref(db, roomPath);
+        this.playerRef = ref(db, `${roomPath}/players/${userId}`);
 
-        this.mockJoinInterval = window.setInterval(() => {
-            if (Math.random() > 0.7) return;
-            this.emit('player_joined', this.generateRandomMockPlayer());
-        }, 15000);
-        
-        this.mockLeaveInterval = window.setInterval(() => {
-            if (Math.random() > 0.7) return;
-            this.emit('player_left', {}); 
-        }, 25000);
-    }
-
-    private stopMockSimulation() {
-        if (this.mockJoinInterval) clearInterval(this.mockJoinInterval);
-        if (this.mockLeaveInterval) clearInterval(this.mockLeaveInterval);
-    }
-
-    private generateRandomMockPlayer() {
-        const names = ["Shadow", "Viper", "Goliath", "Rogue", "Phoenix", "Titan", "Wraith", "Neon", "Cyber", "Flux"];
-        const classes = ['twin', 'sniper', 'machine_gun', 'flank_guard', 'pounder'];
-        return {
-            id: `player_${Math.random().toString(36).substr(2, 9)}`,
-            name: names[Math.floor(Math.random() * names.length)],
-            classPath: classes[Math.floor(Math.random() * classes.length)],
-            pos: { x: Math.random() * 5000, y: Math.random() * 5000 },
-            teamId: Math.random() < 0.5 ? 'BLUE' : 'RED',
+        // 1. Set Initial Data
+        const initialData = {
+            id: userId,
+            name: playerInfo.name,
+            classPath: playerInfo.tank,
+            teamId: playerInfo.faction !== 'NONE' ? playerInfo.faction : userId, // Simple team logic
+            x: Math.random() * 3000, // Random Spawn
+            y: Math.random() * 3000,
+            r: 0,
+            hp: 100,
+            maxHp: 100,
+            score: 0,
+            color: '#00ccff', // Will be overridden by client logic but good fallback
+            timestamp: Date.now()
         };
+
+        set(this.playerRef, initialData)
+            .then(() => {
+                this.isConnected = true;
+                // Remove me if I disconnect (close tab)
+                onDisconnect(this.playerRef).remove();
+                this.emit('connected', {});
+                console.log("[NET] Joined Firebase Room");
+            })
+            .catch(err => {
+                console.error("Firebase join error:", err);
+                this.emit('error', { message: "DB Connection Failed" });
+            });
+
+        // 2. Listen for Other Players
+        const playersRef = ref(db, `${roomPath}/players`);
+        
+        onChildAdded(playersRef, (snapshot) => {
+            const data = snapshot.val();
+            if (data.id === this.myId) return;
+            
+            this.emit('player_joined', {
+                id: data.id,
+                name: data.name,
+                pos: { x: data.x, y: data.y },
+                classPath: data.classPath,
+                teamId: data.teamId,
+                hp: data.hp,
+                maxHp: data.maxHp,
+                score: data.score
+            });
+        });
+
+        onChildRemoved(playersRef, (snapshot) => {
+            const data = snapshot.val();
+            this.emit('player_left', { id: data.id });
+        });
+
+        // 3. Listen for Updates (Movement + Stats)
+        onValue(playersRef, (snapshot) => {
+            const players = snapshot.val();
+            if (!players) return;
+
+            const updates: any[] = [];
+            Object.values(players).forEach((p: any) => {
+                if (p.id !== this.myId) {
+                    updates.push({
+                        id: p.id,
+                        x: p.x,
+                        y: p.y,
+                        r: p.r,
+                        hp: p.hp,
+                        maxHp: p.maxHp,
+                        score: p.score,
+                        classPath: p.classPath
+                    });
+                }
+            });
+            
+            // Format to match WorldSnapshot structure expected by GameEngine
+            if (updates.length > 0) {
+                this.emit('world_update', { entities: updates });
+            }
+        });
+
+        // 4. Listen for Chat
+        const chatRef = ref(db, `${roomPath}/chat`);
+        // Limit to last 1 messages on join to avoid spam, then listen for new
+        // Note: Real implementation might use query constraints
+        onChildAdded(chatRef, (snapshot) => {
+            const msg = snapshot.val();
+            // Ignore old messages (older than 5 seconds)
+            if (Date.now() - msg.timestamp > 5000) return;
+            
+            this.emit('chat_message', {
+                sender: msg.sender,
+                content: msg.content,
+                isSystem: false
+            });
+        });
+    }
+
+    // --- MOCK LOGIC ---
+    private startMockSimulation() {
+        console.log("[NET] Local Sandbox");
+        this.isConnected = true;
+        setTimeout(() => this.emit('connected', {}), 100);
     }
 }

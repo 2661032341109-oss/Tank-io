@@ -1,6 +1,15 @@
 
 import { GameSettings, GlossaryEntry, ShapeType, GameMode, FactionType } from './types';
 
+// --- ADMIN CONFIGURATION ---
+// ใส่ UID ของคุณที่ได้จาก Firebase Authentication ที่นี่
+// คุณดู UID ได้ในหน้า console.firebase.google.com -> Authentication -> Users
+export const ADMIN_UIDS = [
+    "YOUR_ADMIN_UID_HERE", 
+    "สำรอง_UID_เผื่อมีหลายไอดี",
+    "GUEST_ADMIN" // สำหรับทดสอบระบบ Guest
+];
+
 // --- NEW: CENTRAL GAME RULES CONFIGURATION ---
 // ปรับแต่งกติกาฟิสิกส์และ AI ได้ที่นี่โดยไม่ต้องแก้โค้ดลึกๆ
 export const GAME_RULES = {

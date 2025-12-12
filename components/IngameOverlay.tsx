@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { ChatManager, ChatMessage, KillFeedItem } from '../engine/managers/ChatManager';
+import { ChatManager, ChatMessage } from '../engine/managers/ChatManager';
 
 interface IngameOverlayProps {
     chatManager: ChatManager;
@@ -14,14 +14,10 @@ export const IngameOverlay: React.FC<IngameOverlayProps> = ({ chatManager }) => 
 
     // Sync state with manager
     useEffect(() => {
-        // Initial load
         setMessages([...chatManager.messages]);
-
-        // Poll for updates (simple way to sync without complex event emitters)
         const interval = setInterval(() => {
             setMessages([...chatManager.messages]);
         }, 200);
-
         return () => clearInterval(interval);
     }, [chatManager]);
 
@@ -31,7 +27,8 @@ export const IngameOverlay: React.FC<IngameOverlayProps> = ({ chatManager }) => 
             if (e.key === 'Enter') {
                 if (isChatOpen) {
                     if (input.trim()) {
-                        chatManager.addMessage("Player", input.trim());
+                        // Use the new method that triggers networking
+                        chatManager.sendPlayerMessage("Player", input.trim());
                         setInput("");
                     }
                     setIsChatOpen(false);
@@ -47,10 +44,6 @@ export const IngameOverlay: React.FC<IngameOverlayProps> = ({ chatManager }) => 
 
     return (
         <div className="absolute inset-0 pointer-events-none z-50 flex flex-col justify-between p-4">
-            
-            {/* Kill Feed Removed per user request */}
-
-            {/* BOTTOM LEFT: Chat */}
             <div className="absolute bottom-24 left-4 w-80 flex flex-col justify-end pointer-events-auto">
                 <div className="flex flex-col gap-1 max-h-48 overflow-y-auto custom-scrollbar-hidden mb-2">
                     {messages.map(msg => (

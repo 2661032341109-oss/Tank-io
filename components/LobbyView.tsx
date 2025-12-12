@@ -1,12 +1,16 @@
 
 import React, { useState, useEffect } from 'react';
-import { GLOSSARY_DATA, GAME_MODES } from '../constants';
+import { GLOSSARY_DATA, GAME_MODES, ADMIN_UIDS } from '../constants';
 import { GameMode, FactionType, ServerRegion } from '../types';
 import { TankGallery } from './TankGallery';
 import { BossGallery } from './BossGallery';
 import { LegalModal } from './LegalModal';
 import { PrivacyModal } from './PrivacyModal';
-import { Settings, Book, Database, Sword, Crown, Play, Cpu } from 'lucide-react';
+import { Settings, Book, Database, Sword, Crown, Play, Cpu, LogIn, LogOut, User, Ghost } from 'lucide-react';
+
+// FIREBASE IMPORTS
+import { auth, googleProvider } from '../firebase';
+import { signInWithPopup, signOut, onAuthStateChanged, signInAnonymously, User as FirebaseUser } from 'firebase/auth';
 
 interface LobbyViewProps {
   onStart: (name: string, mode: GameMode, faction: FactionType, selectedClass: string, region: ServerRegion) => void;
@@ -22,6 +26,10 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
   const [selectedMode, setSelectedMode] = useState<GameMode>('FFA');
   const [isHoveringPlay, setIsHoveringPlay] = useState(false);
   
+  // Auth State
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
   // Modal States
   const [showGlossary, setShowGlossary] = useState(false);
   const [showGallery, setShowGallery] = useState(false);
@@ -32,11 +40,27 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
   // Intro Animation
   const [mounted, setMounted] = useState(false);
   
-  // Load saved data on mount
+  // Load saved data and Auth Listener
   useEffect(() => { 
       setMounted(true); 
+      
+      // Check local storage first
       const savedName = localStorage.getItem('tank_io_nickname');
       if (savedName) setName(savedName);
+
+      // Listen for Firebase Auth State
+      const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+          setUser(currentUser);
+          setAuthLoading(false);
+          if (currentUser && currentUser.displayName) {
+              // Auto-fill name from Google Account
+              setName(currentUser.displayName);
+          } else if (currentUser && currentUser.isAnonymous && !name) {
+              setName(`Guest_${currentUser.uid.slice(0, 4)}`);
+          }
+      });
+
+      return () => unsubscribe();
   }, []);
 
   const handleStart = () => {
@@ -45,7 +69,41 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
       onStart(name || 'Player', selectedMode, FactionType.NONE, 'basic', LOCAL_REGION);
   };
 
+  const handleLogin = async () => {
+      try {
+          await signInWithPopup(auth, googleProvider);
+      } catch (error: any) {
+          console.error("Login failed", error);
+          if (error.code === 'auth/unauthorized-domain') {
+              alert(`Login Failed: Unauthorized Domain (${window.location.hostname}).\n\nTo fix this, go to Firebase Console -> Authentication -> Settings -> Authorized Domains and add "${window.location.hostname}" to the list.`);
+          } else if (error.code !== 'auth/popup-closed-by-user') {
+              alert(`Login failed: ${error.message}`);
+          }
+      }
+  };
+
+  const handleGuestLogin = async () => {
+      try {
+          await signInAnonymously(auth);
+      } catch (error: any) {
+          console.error("Guest login failed", error);
+          alert(`Guest login failed: ${error.message}`);
+      }
+  };
+
+  const handleLogout = async () => {
+      try {
+          await signOut(auth);
+          setName(''); // Clear name on logout
+      } catch (error) {
+          console.error("Logout failed", error);
+      }
+  };
+
   const currentModeConfig = GAME_MODES.find(m => m.id === selectedMode);
+  
+  // Check Admin
+  const isAdmin = user && ADMIN_UIDS.includes(user.uid);
 
   return (
     <div className="fixed inset-0 bg-[#050505] flex items-center justify-center overflow-hidden font-sans select-none text-slate-200">
@@ -129,8 +187,53 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
             {/* Decorative Scanline */}
             <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] z-0 pointer-events-none bg-[length:100%_4px,6px_100%] opacity-20"></div>
 
+            {/* Authentication Section */}
+            <div className="relative z-10 flex justify-end">
+                {!authLoading && (
+                    user ? (
+                        <div className="flex items-center gap-3 bg-slate-900/60 p-2 pl-4 rounded-full border border-green-500/30">
+                            <div className="flex flex-col items-end">
+                                <span className="text-[9px] text-slate-400 uppercase tracking-widest font-bold">Pilot</span>
+                                <span className="text-xs font-bold text-green-400">{user.displayName || "Unknown"}</span>
+                            </div>
+                            {user.photoURL ? (
+                                <img src={user.photoURL} alt="Profile" className="w-8 h-8 rounded-full border border-green-500" />
+                            ) : (
+                                <div className="w-8 h-8 rounded-full bg-green-900 flex items-center justify-center text-green-400">
+                                    {user.isAnonymous ? <Ghost size={16}/> : <User size={16}/>}
+                                </div>
+                            )}
+                            <button 
+                                onClick={handleLogout}
+                                className="w-8 h-8 flex items-center justify-center bg-red-900/20 hover:bg-red-900/50 rounded-full text-red-400 transition-colors ml-1"
+                                title="Sign Out"
+                            >
+                                <LogOut size={14} />
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="flex gap-2">
+                            <button 
+                                onClick={handleLogin}
+                                className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold py-2 px-4 rounded-full transition-all border border-slate-600 hover:border-white shadow-lg"
+                            >
+                                <LogIn size={14} />
+                                <span>GOOGLE</span>
+                            </button>
+                            <button 
+                                onClick={handleGuestLogin}
+                                className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-bold py-2 px-4 rounded-full transition-all border border-slate-600 hover:border-white shadow-lg"
+                            >
+                                <Ghost size={14} />
+                                <span>GUEST</span>
+                            </button>
+                        </div>
+                    )
+                )}
+            </div>
+
             {/* Input Section */}
-            <div className="relative z-10 space-y-2 mt-4">
+            <div className="relative z-10 space-y-2 mt-2">
                 <label className="text-[10px] font-black text-cyan-500 uppercase tracking-widest ml-1">Identity</label>
                 <div className="relative group">
                     <input
@@ -204,14 +307,16 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
                 <NavBtn icon={<Database size={18} />} label="Armory" onClick={() => setShowGallery(true)} />
                 <NavBtn icon={<Sword size={18} />} label="Bestiary" onClick={() => setShowBossGallery(true)} highlight />
                 
-                {/* Developer Access */}
-                <button 
-                    onClick={onOpenStudio} 
-                    className="col-span-4 flex items-center justify-center gap-2 py-2 mt-2 rounded border border-dashed border-slate-700 text-[10px] text-slate-500 font-bold hover:text-cyan-400 hover:border-cyan-500/50 transition-colors uppercase tracking-widest group"
-                >
-                    <Crown size={12} className="group-hover:text-yellow-400 transition-colors" />
-                    Access Developer Studio
-                </button>
+                {/* Developer Access (ADMIN ONLY) */}
+                {isAdmin && (
+                    <button 
+                        onClick={onOpenStudio} 
+                        className="col-span-4 flex items-center justify-center gap-2 py-2 mt-2 rounded border border-dashed border-slate-700 text-[10px] text-slate-500 font-bold hover:text-cyan-400 hover:border-cyan-500/50 transition-colors uppercase tracking-widest group bg-slate-900/50"
+                    >
+                        <Crown size={12} className="group-hover:text-yellow-400 transition-colors" />
+                        Developer Studio (Admin)
+                    </button>
+                )}
             </div>
             
             {/* Mobile Footer */}
