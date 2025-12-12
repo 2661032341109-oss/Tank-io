@@ -9,7 +9,7 @@ export class NetworkManager {
     private handlers: Record<string, NetworkEventHandler[]> = {};
     public isConnected: boolean = false;
     public isMockMode: boolean = false; 
-    public isHost: boolean = false; // NEW: Am I the server?
+    public isHost: boolean = false; 
     
     private myId: string | null = null;
     private roomRef: firebase.database.Reference | null = null;
@@ -17,23 +17,29 @@ export class NetworkManager {
     private hostRef: firebase.database.Reference | null = null;
     private entitiesRef: firebase.database.Reference | null = null;
 
-    // Throttling
     private lastInputSendTime: number = 0;
     private lastSlowUpdateSendTime: number = 0;
     private lastWorldSyncTime: number = 0;
     
-    private readonly INPUT_RATE = 1000 / 15; // Player moves (15Hz)
-    private readonly SLOW_UPDATE_RATE = 1000; // HP/Score (1Hz)
-    private readonly WORLD_SYNC_RATE = 1000 / 10; // Bot/Shape Sync (10Hz) - Host only
+    private readonly INPUT_RATE = 1000 / 15; 
+    private readonly SLOW_UPDATE_RATE = 1000; 
+    private readonly WORLD_SYNC_RATE = 1000 / 10; 
 
     constructor() {}
 
     connect(region: ServerRegion, playerInfo: { name: string; tank: string; mode: GameMode; faction: FactionType }) {
-        console.log(`[NET] Connecting to ${region.name} (${playerInfo.mode})...`);
+        console.log(`[NET] Connecting to ${playerInfo.mode} (Region: ${region.name})...`);
         
-        this.isMockMode = region.type === 'LOCAL' || playerInfo.mode === 'SANDBOX';
+        // IMPORTANT: We ALWAYS connect to Firebase now to ensure DB writes happen,
+        // but we might still treat physics as "Local" (MockMode) for Sandbox.
+        // However, to populate the DB list, we must allow the connection logic.
+        
+        // Only strictly "LOCAL" region types (offline dev) avoid firebase. 
+        // Sandbox mode SHOULD connect to DB for chat/presence.
+        const isOffline = region.type === 'LOCAL'; 
+        this.isMockMode = isOffline || playerInfo.mode === 'SANDBOX';
 
-        if (this.isMockMode) {
+        if (isOffline) {
             this.startMockSimulation();
         } else {
             this.startFirebaseConnection(playerInfo);
@@ -46,12 +52,16 @@ export class NetworkManager {
             this.playerRef = null;
         }
         if (this.isHost && this.hostRef) {
-            this.hostRef.remove(); // Drop host status
-            // Optionally clear entities so next host starts fresh
+            this.hostRef.remove(); 
+            // In a real game, you might want to keep entities, but for cleanup:
             if (this.entitiesRef) this.entitiesRef.remove();
         }
         
-        // Remove all listeners (simplified)
+        // Detach listeners
+        if (this.roomRef) this.roomRef.off();
+        if (this.entitiesRef) this.entitiesRef.off();
+        if (this.hostRef) this.hostRef.off();
+        
         this.handlers = {};
         this.isConnected = false;
         this.isHost = false;
@@ -59,46 +69,43 @@ export class NetworkManager {
     }
 
     // --- HOST LOGIC ---
-    // Only the Host calls this to update Bots/Shapes for everyone else
     syncWorldEntities(entities: Entity[]) {
-        if (!this.isHost || this.isMockMode || !this.entitiesRef) return;
+        if (!this.isHost || !this.entitiesRef) return;
+        // In Sandbox, we might choose NOT to sync entities to save bandwidth since everything is local anyway,
+        // but to "see" things in DB, we can allow it.
+        if (this.isMockMode && !this.isConnected) return; // Verify actual connection
 
         const now = Date.now();
         if (now - this.lastWorldSyncTime < this.WORLD_SYNC_RATE) return;
         this.lastWorldSyncTime = now;
 
-        // Filter: Only sync Shapes, Crashers, Enemies, and Bosses
-        // Do NOT sync players (they sync themselves) or particles
         const syncData: Record<string, any> = {};
         
         entities.forEach(e => {
             if (e.type === EntityType.SHAPE || e.type === EntityType.CRASHER || e.type === EntityType.ENEMY || e.type === EntityType.BOSS) {
-                // Optimize: Round numbers to save bandwidth
                 syncData[e.id] = {
-                    t: e.type, // Type
+                    t: e.type, 
                     x: Math.round(e.pos.x),
                     y: Math.round(e.pos.y),
                     r: parseFloat(e.rotation.toFixed(2)),
                     h: Math.ceil(e.health),
                     m: Math.ceil(e.maxHealth),
-                    c: e.color, // Color
-                    sz: Math.round(e.radius), // Size
-                    bt: (e as any).bossType, // Boss Type
-                    st: (e as any).shapeType, // Shape Type
-                    v: (e as any).variant, // Variant
-                    cp: (e as any).classPath // Bot Class
+                    c: e.color,
+                    sz: Math.round(e.radius),
+                    bt: (e as any).bossType,
+                    st: (e as any).shapeType,
+                    v: (e as any).variant,
+                    cp: (e as any).classPath
                 };
             }
         });
 
-        // Use 'set' to replace the world state (Authoritative snapshot)
-        this.entitiesRef.set(syncData).catch(() => {});
+        this.entitiesRef.set(syncData).catch(e => console.warn("Entity Sync fail:", e));
     }
 
     // --- CLIENT LOGIC ---
-    // Everyone calls this to send their own position
     syncPlayerState(pos: {x: number, y: number}, rotation: number) {
-        if (this.isMockMode || !this.playerRef) return;
+        if (!this.playerRef) return;
         
         const now = Date.now();
         if (now - this.lastInputSendTime < this.INPUT_RATE) return;
@@ -108,11 +115,13 @@ export class NetworkManager {
             x: Math.round(pos.x),
             y: Math.round(pos.y),
             r: parseFloat(rotation.toFixed(2))
-        }).catch(() => {});
+        }).catch(e => {
+            // Suppress minor update errors
+        });
     }
 
     syncPlayerDetails(health: number, maxHealth: number, score: number, classPath: string) {
-        if (this.isMockMode || !this.playerRef) return;
+        if (!this.playerRef) return;
 
         const now = Date.now();
         if (now - this.lastSlowUpdateSendTime < this.SLOW_UPDATE_RATE) return;
@@ -123,11 +132,10 @@ export class NetworkManager {
             maxHp: Math.round(maxHealth),
             score: Math.floor(score),
             classPath: classPath
-        }).catch(() => {});
+        }).catch(e => console.warn("Player Detail Sync fail:", e));
     }
 
     sendChat(message: string, sender: string) {
-        if (this.isMockMode) return;
         if (!this.roomRef) return;
         const chatRef = db.ref(`${this.roomRef.key}/chat`);
         chatRef.push({ sender, content: message, timestamp: Date.now() });
@@ -145,10 +153,22 @@ export class NetworkManager {
     // --- FIREBASE SETUP ---
 
     private async startFirebaseConnection(playerInfo: { name: string; tank: string; mode: GameMode; faction: FactionType }) {
-        const userId = auth.currentUser ? auth.currentUser.uid : `guest_${Math.random().toString(36).substr(2, 5)}`;
+        // Ensure Auth
+        let user = auth.currentUser;
+        if (!user) {
+            try {
+                const cred = await auth.signInAnonymously();
+                user = cred.user;
+            } catch(e) {
+                console.error("Auth failed", e);
+                return;
+            }
+        }
+        
+        const userId = user!.uid;
         this.myId = userId;
         
-        // FIXED ROOM: Use a specific region ID so friends always find each other
+        // IMPORTANT: Ensure the path is clean
         const roomPath = `rooms/${playerInfo.mode}`;
         
         this.roomRef = db.ref(roomPath);
@@ -156,38 +176,44 @@ export class NetworkManager {
         this.hostRef = db.ref(`${roomPath}/host`);
         this.entitiesRef = db.ref(`${roomPath}/world_entities`);
 
-        // 1. Try to become Host
+        console.log(`[NET] Attempting to write player data to: ${roomPath}/players/${userId}`);
+
+        // 1. Try to become Host (simple transaction)
         await this.tryBecomeHost(userId);
 
-        // 2. Set Initial Player Data
+        // 2. Set Initial Player Data (FORCE WRITE)
         const initialData = {
             id: userId,
             name: playerInfo.name,
             classPath: playerInfo.tank,
             teamId: playerInfo.faction !== 'NONE' ? playerInfo.faction : userId, 
-            x: Math.random() * 3000, 
-            y: Math.random() * 3000,
+            x: Math.floor(Math.random() * 2000), 
+            y: Math.floor(Math.random() * 2000),
             r: 0,
             hp: 100,
             maxHp: 100,
             score: 0,
             color: '#00ccff',
-            timestamp: Date.now()
+            timestamp: firebase.database.ServerValue.TIMESTAMP
         };
 
         this.playerRef.set(initialData)
             .then(() => {
                 this.isConnected = true;
                 if (this.playerRef) this.playerRef.onDisconnect().remove();
+                
+                // If I am host, also clear entities on disconnect
+                if (this.isHost && this.entitiesRef) this.entitiesRef.onDisconnect().remove();
+
                 this.emit('connected', { isHost: this.isHost });
-                console.log(`[NET] Joined ${roomPath}. Am I Host? ${this.isHost}`);
+                console.log(`[NET] Connected! Host: ${this.isHost}`);
             })
             .catch(err => {
-                console.error("Join Error:", err);
-                this.emit('error', { message: "Connection Failed" });
+                console.error("[NET] FATAL: Could not write to Firebase.", err);
+                this.emit('error', { message: "DB Write Failed: " + err.message });
             });
 
-        // 3. Listen for Players
+        // 3. Listeners
         const playersRef = db.ref(`${roomPath}/players`);
         
         playersRef.on('child_added', (snapshot) => {
@@ -211,8 +237,7 @@ export class NetworkManager {
             if (updates.length > 0) this.emit('players_update', updates);
         });
 
-        // 4. Listen for World Entities (Shapes/Bots)
-        // If I am Host, I WRITE this. If I am Client, I READ this.
+        // 4. Listen for World Entities (Only if I am NOT host)
         if (!this.isHost) {
             this.entitiesRef.on('value', (snapshot) => {
                 const data = snapshot.val();
@@ -222,13 +247,12 @@ export class NetworkManager {
             });
         }
 
-        // 5. Host Failover (If host disconnects, try to take over)
+        // 5. Host Failover
         this.hostRef.on('value', (snapshot) => {
             if (!snapshot.exists() && !this.isHost && this.isConnected) {
-                // Host is gone! Try to claim.
                 this.tryBecomeHost(userId).then(() => {
                     if (this.isHost) {
-                        this.emit('host_migration', {}); // Tell GameEngine to start spawning
+                        this.emit('host_migration', {});
                     }
                 });
             }
@@ -238,7 +262,7 @@ export class NetworkManager {
         const chatRef = db.ref(`${roomPath}/chat`);
         chatRef.on('child_added', (snapshot) => {
             const msg = snapshot.val();
-            if (msg && Date.now() - msg.timestamp < 10000) {
+            if (msg && Date.now() - (msg.timestamp || 0) < 10000) {
                 this.emit('chat_message', { sender: msg.sender, content: msg.content });
             }
         });
@@ -249,24 +273,24 @@ export class NetworkManager {
         try {
             const result = await this.hostRef.transaction((currentHost) => {
                 if (currentHost === null) {
-                    return userId; // Claim it
+                    return userId; 
                 }
-                return undefined; // Already taken
+                return undefined; 
             });
 
             if (result.committed) {
                 this.isHost = true;
-                this.hostRef.onDisconnect().remove(); // If I disconnect, host slot opens
+                this.hostRef.onDisconnect().remove(); 
             }
         } catch (e) {
-            console.warn("Host claim race condition", e);
+            console.warn("Host claim check skipped/failed", e);
         }
     }
 
     private startMockSimulation() {
-        console.log("[NET] Local Sandbox");
+        console.log("[NET] Local Simulation Mode");
         this.isConnected = true;
-        this.isHost = true; // Local is always host
+        this.isHost = true; 
         setTimeout(() => this.emit('connected', { isHost: true }), 100);
     }
 }
