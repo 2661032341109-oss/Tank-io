@@ -69,20 +69,32 @@ export class NetworkManager {
         
         entities.forEach(e => {
             if (e.type === EntityType.SHAPE || e.type === EntityType.CRASHER || e.type === EntityType.ENEMY || e.type === EntityType.BOSS) {
-                syncData[e.id] = {
+                // Base Data
+                const data: any = {
                     t: e.type,
-                    x: Math.round(e.pos.x),
-                    y: Math.round(e.pos.y),
-                    r: parseFloat(e.rotation.toFixed(2)),
-                    h: Math.ceil(e.health),
-                    m: Math.ceil(e.maxHealth),
-                    c: e.color,
-                    sz: Math.round(e.radius),
-                    bt: (e as any).bossType,
-                    st: (e as any).shapeType,
-                    v: (e as any).variant,
-                    cp: (e as any).classPath
+                    x: Math.round(e.pos.x || 0),
+                    y: Math.round(e.pos.y || 0),
+                    r: parseFloat((e.rotation || 0).toFixed(2)),
+                    h: Math.ceil(e.health || 0),
+                    m: Math.ceil(e.maxHealth || 100),
+                    c: e.color || '#fff',
+                    sz: Math.round(e.radius || 10)
                 };
+
+                // Optional Properties - Only add if defined to avoid Firebase 'undefined' error
+                const bossType = (e as any).bossType;
+                if (bossType) data.bt = bossType;
+
+                const shapeType = (e as any).shapeType;
+                if (shapeType) data.st = shapeType;
+
+                const variant = (e as any).variant;
+                if (variant) data.v = variant;
+
+                const classPath = (e as any).classPath;
+                if (classPath) data.cp = classPath;
+
+                syncData[e.id] = data;
             }
         });
 
@@ -115,7 +127,7 @@ export class NetworkManager {
             hp: Math.round(health),
             maxHp: Math.round(maxHealth),
             score: Math.floor(score),
-            classPath: classPath
+            classPath: classPath || 'basic'
         }).catch(() => {});
     }
 
