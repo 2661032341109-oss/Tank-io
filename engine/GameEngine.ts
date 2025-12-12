@@ -428,7 +428,7 @@ export class GameEngine {
         this.playerManager.entity,
         { 
             pos: cameraConfig.pos, 
-            zoom: cameraConfig.zoom,
+            zoom: cameraConfig.zoom, 
             canvasWidth: this.canvas.width,
             canvasHeight: this.canvas.height
         },
