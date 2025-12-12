@@ -27,7 +27,7 @@ export class NetworkManager {
     private lastSlowUpdateSendTime: number = 0;
     private lastWorldSyncTime: number = 0;
     
-    // 20 FPS is good balance for Firebase/WS
+    // 20 FPS Update Rate (Matches Server)
     private readonly INPUT_RATE = 1000 / 20; 
     private readonly SLOW_UPDATE_RATE = 2000;
     private readonly WORLD_SYNC_RATE = 1000 / 10; 
@@ -42,10 +42,10 @@ export class NetworkManager {
             this.isMockMode = true;
             this.startMockSimulation();
         } else if (region.url.startsWith('ws')) {
-            // WEBSOCKET MODE (Railway/Node)
+            // WEBSOCKET MODE (Standard Multiplayer)
             this.connectWebSocket(region.url, playerInfo);
         } else {
-            // FIREBASE MODE (Legacy)
+            // FIREBASE MODE (Fallback/Legacy)
             this.startFirebaseConnection(playerInfo);
         }
     }
@@ -91,7 +91,6 @@ export class NetworkManager {
                     t: e.type,
                     x: Math.round(e.pos.x),
                     y: Math.round(e.pos.y),
-                    // SEND VELOCITY FOR PREDICTION
                     vx: Math.round(e.vel.x),
                     vy: Math.round(e.vel.y),
                     r: round(e.rotation),
@@ -175,15 +174,13 @@ export class NetworkManager {
         if (this.handlers[event]) this.handlers[event].forEach(handler => handler(data));
     }
 
-    // --- WEBSOCKET SETUP (RAILWAY) ---
+    // --- WEBSOCKET CONNECTION (PROFESSIONAL) ---
     private connectWebSocket(url: string, playerInfo: any) {
         const userId = auth.currentUser ? auth.currentUser.uid : `guest_${Math.random().toString(36).substr(2, 5)}`;
-        this.myId = userId;
-
-        // Construct WS URL with query params for handshake
-        // If relative URL (for same-origin deployment), use window.location
+        
+        // Construct WS URL
         let wsUrl = url;
-        if (url === 'public') { // Flag used in LobbyView
+        if (url === 'public') {
              const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
              wsUrl = `${protocol}//${window.location.host}`;
         }
@@ -191,31 +188,34 @@ export class NetworkManager {
         wsUrl += `?room=${playerInfo.mode}&uid=${userId}&name=${encodeURIComponent(playerInfo.name)}`;
 
         this.ws = new WebSocket(wsUrl);
+        this.ws.binaryType = "arraybuffer"; // Future proofing
 
         this.ws.onopen = () => {
             console.log("[WS] Connected");
             this.isConnected = true;
-            this.emit('connected', { isHost: false }); // WS Server is always host
+            this.emit('connected', { isHost: false });
         };
 
         this.ws.onmessage = (event) => {
             try {
+                // Basic string parsing for now (Binary is better but harder to maintain for this scope)
                 const msg = JSON.parse(event.data as string);
                 
-                if (msg.t === 'j') { // Join
-                    if (msg.d.id !== this.myId) this.emit('player_joined', msg.d);
-                } else if (msg.t === 'init') { // NEW: Initialization packet (Batch Join)
-                    if (Array.isArray(msg.d)) {
-                        console.log(`[WS] Initializing ${msg.d.length} existing players`);
-                        msg.d.forEach((p: any) => {
-                            if (p.id !== this.myId) this.emit('player_joined', p);
-                        });
-                    }
-                } else if (msg.t === 'l') { // Leave
+                // --- PACKET HANDLING ---
+                if (msg.t === 'hello') {
+                    this.myId = msg.id;
+                    console.log(`[WS] Handshake Complete. My ID: ${this.myId}`);
+                }
+                else if (msg.t === 'w') { // WORLD SNAPSHOT (The efficient one)
+                    // msg.d is an array of player objects
+                    // Filter self out
+                    const updates = msg.d.filter((p: any) => p.id !== this.myId);
+                    this.emit('players_update', updates);
+                }
+                else if (msg.t === 'l') { // Leave
                     this.emit('player_left', msg.d);
-                } else if (msg.t === 'u') { // Update
-                    this.emit('players_update', [msg.d]);
-                } else if (msg.t === 'c') { // Chat
+                } 
+                else if (msg.t === 'c') { // Chat
                     this.emit('chat_message', msg.d);
                 }
             } catch (e) {
@@ -234,8 +234,7 @@ export class NetworkManager {
         };
     }
 
-    // --- FIREBASE SETUP ---
-
+    // --- FIREBASE CONNECTION (LEGACY) ---
     private async startFirebaseConnection(playerInfo: { name: string; tank: string; mode: GameMode; faction: FactionType }) {
         try {
             const userId = auth.currentUser ? auth.currentUser.uid : `guest_${Math.random().toString(36).substr(2, 5)}`;
@@ -277,6 +276,7 @@ export class NetworkManager {
 
             const playersRef = ref(db, `${roomPath}/players`);
             
+            // Manual Snapshot for Firebase
             const snapshot = await get(playersRef);
             if (snapshot.exists()) {
                 const players = snapshot.val();

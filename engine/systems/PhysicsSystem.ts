@@ -1,6 +1,6 @@
 
 import { Entity, EntityType, BiomeType, Vector2, SoundType, Barrel, BulletType, StatusEffectType } from '../../types';
-import { FRICTION, GAME_RULES } from '../../constants';
+import { FRICTION, GAME_RULES, WORLD_SIZE } from '../../constants';
 import { WorldSystem } from './WorldSystem';
 import { ParticleSystem } from './ParticleSystem';
 import { StatManager } from '../managers/StatManager';
@@ -8,8 +8,64 @@ import { CameraManager } from '../managers/CameraManager';
 import { AudioManager } from '../managers/AudioManager';
 import { StatusEffectSystem } from './StatusEffectSystem';
 
+// --- SPATIAL GRID CLASS ---
+// Divides the world into cells. We only check collisions between entities in the same or neighboring cells.
+// This is the "Industry Standard" optimization for 2D collision.
+class SpatialGrid {
+    private cellSize: number;
+    private cells: Map<string, Entity[]>;
+
+    constructor(cellSize: number = 200) {
+        this.cellSize = cellSize;
+        this.cells = new Map();
+    }
+
+    clear() {
+        this.cells.clear();
+    }
+
+    insert(entity: Entity) {
+        const key = this.getKey(entity.pos);
+        if (!this.cells.has(key)) {
+            this.cells.set(key, []);
+        }
+        this.cells.get(key)!.push(entity);
+        
+        // Handle entities spanning multiple cells (basic approximation by radius)
+        // If entity is big, we might add it to neighbors too, but usually simple center point is enough 
+        // if we check 3x3 neighbors during query.
+    }
+
+    // Returns entities in the same cell AND surrounding 8 cells
+    query(pos: Vector2): Entity[] {
+        const results: Entity[] = [];
+        const cx = Math.floor(pos.x / this.cellSize);
+        const cy = Math.floor(pos.y / this.cellSize);
+
+        for (let x = cx - 1; x <= cx + 1; x++) {
+            for (let y = cy - 1; y <= cy + 1; y++) {
+                const key = `${x}_${y}`;
+                const cellEntities = this.cells.get(key);
+                if (cellEntities) {
+                    for (const ent of cellEntities) {
+                        results.push(ent);
+                    }
+                }
+            }
+        }
+        return results;
+    }
+
+    private getKey(pos: Vector2): string {
+        return `${Math.floor(pos.x / this.cellSize)}_${Math.floor(pos.y / this.cellSize)}`;
+    }
+}
+
 export class PhysicsSystem {
   
+  // Reusable Grid Instance
+  private static grid = new SpatialGrid(250);
+
   static updateMovement(entities: Entity[], dt: number, statManager: StatManager, mapWidth: number, mapHeight: number) {
       entities.forEach(ent => {
           if (ent.isDead) return;
@@ -89,7 +145,6 @@ export class PhysicsSystem {
                   ent.isDead = true;
               }
               
-              // Fixed lifespan check (Strict Type)
               if (typeof ent.lifespan === 'number') {
                   ent.lifespan -= dt;
                   if (ent.lifespan <= 0) ent.isDead = true;
@@ -158,11 +213,9 @@ export class PhysicsSystem {
               ent.vel.x *= 0.95;
               ent.vel.y += 300 * dt;
               
-              // Safe access for opacity
               const life = typeof ent.lifespan === 'number' ? ent.lifespan : 0;
               ent.opacity = Math.max(0, life / 0.8);
               
-              // Fixed lifespan check for Floating Text (Strict Type)
               if (typeof ent.lifespan === 'number') {
                   ent.lifespan -= dt;
                   if (ent.lifespan <= 0) ent.isDead = true;
@@ -236,12 +289,27 @@ export class PhysicsSystem {
   ) {
     const allEntities = [...entities, player];
 
+    // 1. POPULATE SPATIAL GRID
+    this.grid.clear();
+    const walls: Entity[] = [];
+    
+    for (const ent of allEntities) {
+        if (ent.isDead || ent.type === EntityType.PARTICLE || ent.type === EntityType.FLOATING_TEXT) continue;
+        
+        if (ent.type === EntityType.WALL) {
+            walls.push(ent); // Keep walls separate for global check or special grid logic
+        } else {
+            this.grid.insert(ent);
+        }
+    }
+
+    // 2. CHECK COLLISIONS (Optimized)
     for (let i = 0; i < allEntities.length; i++) {
         const entA = allEntities[i];
-        if (entA.isDead || entA.type === EntityType.PARTICLE || entA.type === EntityType.FLOATING_TEXT) continue;
+        if (entA.isDead || entA.type === EntityType.PARTICLE || entA.type === EntityType.FLOATING_TEXT || entA.type === EntityType.WALL) continue;
         
+        // Bullet vs Walls (Global check for walls is okay as there are few walls usually, or we could add walls to grid)
         if (entA.type === EntityType.BULLET) {
-            const walls = entities.filter(e => e.type === EntityType.WALL);
             for (const wall of walls) {
                 if (this.isPointInRect(entA.pos, wall)) {
                     entA.health = 0; 
@@ -253,38 +321,41 @@ export class PhysicsSystem {
         }
         if (entA.isDead) continue;
 
-        if (entA.type !== EntityType.WALL && entA.type !== EntityType.BULLET) { 
-            const walls = entities.filter(e => e.type === EntityType.WALL);
-            for (const wall of walls) {
-                if (!wall.width || !wall.height) continue;
-                const circle = entA;
-                const rect = wall;
-                const closestX = Math.max(rect.pos.x - rect.width!/2, Math.min(circle.pos.x, rect.pos.x + rect.width!/2));
-                const closestY = Math.max(rect.pos.y - rect.height!/2, Math.min(circle.pos.y, rect.pos.y + rect.height!/2));
-                const dx = circle.pos.x - closestX;
-                const dy = circle.pos.y - closestY;
-                const distance = Math.hypot(dx, dy);
-                if (distance < circle.radius) {
-                    const overlap = circle.radius - distance;
-                    if (distance === 0) { circle.pos.y += circle.radius; continue; }
-                    const normalX = dx / distance;
-                    const normalY = dy / distance;
-                    circle.pos.x += normalX * overlap;
-                    circle.pos.y += normalY * overlap;
-                    
-                    const dot = circle.vel.x * normalX + circle.vel.y * normalY;
-                    if (dot < 0) {
-                        circle.vel.x -= dot * normalX;
-                        circle.vel.y -= dot * normalY;
-                    }
+        // Circle vs Wall Resolution
+        for (const wall of walls) {
+            if (!wall.width || !wall.height) continue;
+            const circle = entA;
+            const rect = wall;
+            const closestX = Math.max(rect.pos.x - rect.width!/2, Math.min(circle.pos.x, rect.pos.x + rect.width!/2));
+            const closestY = Math.max(rect.pos.y - rect.height!/2, Math.min(circle.pos.y, rect.pos.y + rect.height!/2));
+            const dx = circle.pos.x - closestX;
+            const dy = circle.pos.y - closestY;
+            const distance = Math.hypot(dx, dy);
+            if (distance < circle.radius) {
+                const overlap = circle.radius - distance;
+                if (distance === 0) { circle.pos.y += circle.radius; continue; }
+                const normalX = dx / distance;
+                const normalY = dy / distance;
+                circle.pos.x += normalX * overlap;
+                circle.pos.y += normalY * overlap;
+                
+                const dot = circle.vel.x * normalX + circle.vel.y * normalY;
+                if (dot < 0) {
+                    circle.vel.x -= dot * normalX;
+                    circle.vel.y -= dot * normalY;
                 }
             }
         }
 
-        for (let j = i + 1; j < allEntities.length; j++) {
-            const entB = allEntities[j];
-            if (entB.isDead || entB.type === EntityType.WALL || entB.type === EntityType.PARTICLE || entB.type === EntityType.FLOATING_TEXT) continue;
-            if (entA.type === EntityType.WALL) continue;
+        // Entity vs Entity (Using Grid)
+        const neighbors = this.grid.query(entA.pos);
+        
+        for (const entB of neighbors) {
+            if (entA === entB) continue; // Skip self
+            // Avoid duplicate checks? (i < j logic is hard with grid, so we might double check, but it's cheap)
+            // Or we can rely on ID check if needed, but double collision resolution usually stabilizes better.
+            
+            if (entB.isDead) continue;
             
             if (entA.ownerId && entB.ownerId && entA.ownerId === entB.ownerId) {
                 if (entA.type === EntityType.BULLET && entB.type === EntityType.BULLET) continue;
@@ -305,16 +376,10 @@ export class PhysicsSystem {
 
             if (entA.id === entB.id || entA.ownerId === entB.id || entB.ownerId === entA.id) continue;
             
-            // --- STRICT FRIENDLY FIRE CHECK ---
             if (entA.teamId && entB.teamId && entA.teamId === entB.teamId) {
                 const isProjectileA = entA.type === EntityType.BULLET || entA.type === EntityType.DRONE || entA.type === EntityType.TRAP;
                 const isProjectileB = entB.type === EntityType.BULLET || entB.type === EntityType.DRONE || entB.type === EntityType.TRAP;
-                
-                // If either is a projectile, ignore collision completely (pass through)
-                if (isProjectileA || isProjectileB) {
-                    continue; 
-                }
-                // If both are tanks/players, proceed to collision but damage will be 0 in processCollision
+                if (isProjectileA || isProjectileB) continue; 
             }
 
             if (entA.type === EntityType.BULLET && entB.type === EntityType.BULLET) {
@@ -328,6 +393,8 @@ export class PhysicsSystem {
         }
     }
     
+    // 3. CCD for Fast Bullets (Hitscan-like projectile check)
+    // Grid optimization for Raycast is harder, sticking to linear loop for bullets only (fewer entities usually)
     for (const bullet of entities) {
         if (bullet.type !== EntityType.BULLET || bullet.isDead || !bullet.prevPos) continue;
         
@@ -337,10 +404,7 @@ export class PhysicsSystem {
             if (target.isDead || target.id === bullet.id || target.id === bullet.ownerId) continue;
             if (target.ownerId && bullet.ownerId && target.ownerId === bullet.ownerId) continue;
             if (target.type === EntityType.BULLET && !GAME_RULES.BULLET_TO_BULLET_COLLISION) continue;
-            
-            // --- STRICT FRIENDLY FIRE CHECK (CCD) ---
             if (target.teamId && bullet.teamId && target.teamId === bullet.teamId) continue;
-
             if (target.type === EntityType.PARTICLE || target.type === EntityType.FLOATING_TEXT || target.type === EntityType.ZONE) continue;
             
             let hitPos: Vector2 | null = null;
@@ -381,10 +445,8 @@ export class PhysicsSystem {
         if (!entA.mass) entA.mass = statManager.getEntityMass(entA);
         if (!entB.mass) entB.mass = statManager.getEntityMass(entB);
         
-        // --- STRICT FRIENDLY FIRE CHECK (DAMAGE) ---
         const isFriendly = entA.teamId && entB.teamId && entA.teamId === entB.teamId;
 
-        // If friendly, NO DAMAGE
         let dmgA = isFriendly ? 0 : entA.damage;
         let dmgB = isFriendly ? 0 : entB.damage;
 
@@ -438,7 +500,6 @@ export class PhysicsSystem {
                 
                 allEntities.forEach(target => {
                     if (target.isDead || target.id === source.id || target.id === source.ownerId || target.type === EntityType.PARTICLE) return;
-                    // AOE FRIENDLY FIRE CHECK
                     if (target.teamId && source.teamId && target.teamId === source.teamId) return;
 
                     const dist = Math.hypot(target.pos.x - center.x, target.pos.y - center.y);
@@ -448,10 +509,6 @@ export class PhysicsSystem {
                         target.health -= aoeDmg;
                         target.flashTimer = 0.1;
                         PhysicsSystem.spawnFloatingText(allEntities, target.pos, Math.round(aoeDmg).toString(), '#ffaa00', false);
-
-                        // REMOVED EXPLOSION KNOCKBACK
-                        // target.vel.x += ((target.pos.x - center.x) / dist) * 200 * falloff;
-                        // target.vel.y += ((target.pos.y - center.y) / dist) * 200 * falloff;
                         
                         if (target.health <= 0 && !target.isDead) {
                             target.isDead = true;
@@ -477,8 +534,6 @@ export class PhysicsSystem {
             if (isBulletCollision) {
                 ParticleSystem.spawnHitEffect(allEntities, { x: (entA.pos.x + entB.pos.x)/2, y: (entA.pos.y + entB.pos.y)/2 }, '#fff');
             } else if (!isAnyBullet) {
-                // ONLY PUSH IF NEITHER IS A BULLET
-                // If friendly units, push them gently but don't damage
                 const totalMass = entA.mass + entB.mass;
                 const rA = entB.mass / totalMass;
                 const rB = entA.mass / totalMass;
@@ -554,10 +609,7 @@ export class PhysicsSystem {
 
       for (const target of allEntities) {
           if (target.isDead || target.id === owner.id || target.id === owner.ownerId) continue;
-          
-          // --- STRICT FRIENDLY FIRE CHECK (HITSCAN) ---
           if (target.teamId && owner.teamId && target.teamId === owner.teamId) continue; 
-
           if (target.type === EntityType.PARTICLE || target.type === EntityType.FLOATING_TEXT || target.type === EntityType.ZONE) continue;
           
           let hitPos: Vector2 | null = null;
