@@ -6,12 +6,12 @@ import { TankGallery } from './TankGallery';
 import { BossGallery } from './BossGallery';
 import { LegalModal } from './LegalModal';
 import { PrivacyModal } from './PrivacyModal';
-import { Settings, Book, Database, Sword, Crown, Play, Cpu, LogIn, LogOut, User, Ghost, Globe, Signal, Share2, Users } from 'lucide-react';
+import { Settings, Book, Database, Sword, Crown, Play, Cpu, LogIn, LogOut, User as UserIcon, Ghost, Globe, Signal, Share2, Users } from 'lucide-react';
 
 // FIREBASE IMPORTS
 import { auth, googleProvider, db } from '../firebase';
-import { signInWithPopup, signOut, onAuthStateChanged, signInAnonymously, User as FirebaseUser } from 'firebase/auth';
-import { ref, onValue, Unsubscribe } from 'firebase/database';
+import { User, onAuthStateChanged, signInWithPopup, signInAnonymously, signOut } from "firebase/auth";
+import { ref, onValue, off } from "firebase/database";
 
 interface LobbyViewProps {
   onStart: (name: string, mode: GameMode, faction: FactionType, selectedClass: string, region: ServerRegion) => void;
@@ -40,7 +40,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
   const [ping, setPing] = useState<number>(Math.floor(Math.random() * 20) + 15);
 
   // Auth State
-  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
 
   // Modal States
@@ -72,7 +72,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
 
   // --- NEW: GLOBAL PLAYER COUNTER SYSTEM ---
   useEffect(() => {
-      const listeners: Unsubscribe[] = [];
+      const unsubscribers: (() => void)[] = [];
 
       // 1. Loop through all game modes and attach listeners
       GAME_MODES.forEach(mode => {
@@ -84,21 +84,21 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
 
           const playersRef = ref(db, `rooms/${mode.id}/players`);
           const unsub = onValue(playersRef, (snapshot) => {
-              const count = snapshot.size;
+              const count = snapshot.exists() ? snapshot.size : 0;
               setModeCounts(prev => {
                   const newState = { ...prev, [mode.id]: count };
                   // Recalculate total immediately
-                  const total = Object.values(newState).reduce((a, b) => a + b, 0);
+                  const total = Object.values(newState).reduce((a: number, b: number) => a + b, 0);
                   setTotalOnline(total);
                   return newState;
               });
           });
-          listeners.push(unsub);
+          unsubscribers.push(unsub);
       });
 
       // Cleanup all listeners on unmount
       return () => {
-          listeners.forEach(unsub => unsub());
+          unsubscribers.forEach(unsub => unsub());
       };
   }, []);
 
@@ -231,7 +231,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
                                 <span className="text-xs font-bold text-green-400">{user.displayName || "Unknown"}</span>
                             </div>
                             <div className="w-8 h-8 rounded-full bg-green-900 flex items-center justify-center text-green-400">
-                                {user.photoURL ? <img src={user.photoURL} className="rounded-full"/> : (user.isAnonymous ? <Ghost size={16}/> : <User size={16}/>)}
+                                {user.photoURL ? <img src={user.photoURL} className="rounded-full"/> : (user.isAnonymous ? <Ghost size={16}/> : <UserIcon size={16}/>)}
                             </div>
                             <button onClick={handleLogout} className="w-8 h-8 flex items-center justify-center bg-red-900/20 hover:bg-red-900/50 rounded-full text-red-400 transition-colors ml-1"><LogOut size={14}/></button>
                         </div>

@@ -1,5 +1,5 @@
 
-import { initializeApp } from "firebase/app";
+import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 import { getDatabase } from "firebase/database";
 
@@ -14,8 +14,8 @@ const firebaseConfig = {
   databaseURL: "https://tank-io-5980e-default-rtdb.asia-southeast1.firebasedatabase.app"
 };
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
+// Initialize Firebase (Check for existing app to prevent duplicate init during hot-reload)
+const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
 // Initialize Services
 export const auth = getAuth(app);

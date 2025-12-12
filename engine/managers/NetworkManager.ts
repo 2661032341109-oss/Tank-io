@@ -1,23 +1,30 @@
 
-import { ServerRegion, GameMode, FactionType } from '../../types';
+import { ServerRegion, GameMode, FactionType, Entity, EntityType } from '../../types';
 import { db, auth } from '../../firebase';
-import { ref, set, onValue, onDisconnect, push, update, remove, onChildAdded, onChildRemoved } from "firebase/database";
+import { DatabaseReference, ref, set, update, remove, onDisconnect, onChildAdded, onChildRemoved, onValue, push, runTransaction, DataSnapshot, child } from "firebase/database";
 
 type NetworkEventHandler = (data: any) => void;
 
 export class NetworkManager {
     private handlers: Record<string, NetworkEventHandler[]> = {};
-    private isConnected: boolean = false;
-    private isMockMode: boolean = false; 
+    public isConnected: boolean = false;
+    public isMockMode: boolean = false; 
+    public isHost: boolean = false; // NEW: Am I the server?
+    
     private myId: string | null = null;
-    private roomRef: any = null;
-    private playerRef: any = null;
+    private roomRef: DatabaseReference | null = null;
+    private playerRef: DatabaseReference | null = null;
+    private hostRef: DatabaseReference | null = null;
+    private entitiesRef: DatabaseReference | null = null;
 
     // Throttling
     private lastInputSendTime: number = 0;
     private lastSlowUpdateSendTime: number = 0;
-    private readonly INPUT_RATE = 1000 / 20; // 20 updates per second (Position)
-    private readonly SLOW_UPDATE_RATE = 500; // 2 updates per second (HP, Score, Class)
+    private lastWorldSyncTime: number = 0;
+    
+    private readonly INPUT_RATE = 1000 / 15; // Player moves (15Hz)
+    private readonly SLOW_UPDATE_RATE = 1000; // HP/Score (1Hz)
+    private readonly WORLD_SYNC_RATE = 1000 / 10; // Bot/Shape Sync (10Hz) - Host only
 
     constructor() {}
 
@@ -38,16 +45,58 @@ export class NetworkManager {
             remove(this.playerRef);
             this.playerRef = null;
         }
-        if (this.roomRef) {
-            // Detach listeners
-            // In a real app, we'd use 'off', but for this scope we just nullify
-            this.roomRef = null;
+        if (this.isHost && this.hostRef) {
+            remove(this.hostRef); // Drop host status
+            // Optionally clear entities so next host starts fresh
+            if (this.entitiesRef) remove(this.entitiesRef);
         }
+        
+        // Remove all listeners (simplified)
+        this.handlers = {};
         this.isConnected = false;
+        this.isHost = false;
         console.log("[NET] Disconnected.");
     }
 
-    // --- REALTIME: Fast Sync (Pos, Rot) ---
+    // --- HOST LOGIC ---
+    // Only the Host calls this to update Bots/Shapes for everyone else
+    syncWorldEntities(entities: Entity[]) {
+        if (!this.isHost || this.isMockMode || !this.entitiesRef) return;
+
+        const now = Date.now();
+        if (now - this.lastWorldSyncTime < this.WORLD_SYNC_RATE) return;
+        this.lastWorldSyncTime = now;
+
+        // Filter: Only sync Shapes, Crashers, Enemies, and Bosses
+        // Do NOT sync players (they sync themselves) or particles
+        const syncData: Record<string, any> = {};
+        
+        entities.forEach(e => {
+            if (e.type === EntityType.SHAPE || e.type === EntityType.CRASHER || e.type === EntityType.ENEMY || e.type === EntityType.BOSS) {
+                // Optimize: Round numbers to save bandwidth
+                syncData[e.id] = {
+                    t: e.type, // Type
+                    x: Math.round(e.pos.x),
+                    y: Math.round(e.pos.y),
+                    r: parseFloat(e.rotation.toFixed(2)),
+                    h: Math.ceil(e.health),
+                    m: Math.ceil(e.maxHealth),
+                    c: e.color, // Color
+                    sz: Math.round(e.radius), // Size
+                    bt: (e as any).bossType, // Boss Type
+                    st: (e as any).shapeType, // Shape Type
+                    v: (e as any).variant, // Variant
+                    cp: (e as any).classPath // Bot Class
+                };
+            }
+        });
+
+        // Use 'set' to replace the world state (Authoritative snapshot)
+        set(this.entitiesRef, syncData).catch(() => {});
+    }
+
+    // --- CLIENT LOGIC ---
+    // Everyone calls this to send their own position
     syncPlayerState(pos: {x: number, y: number}, rotation: number) {
         if (this.isMockMode || !this.playerRef) return;
         
@@ -59,12 +108,9 @@ export class NetworkManager {
             x: Math.round(pos.x),
             y: Math.round(pos.y),
             r: parseFloat(rotation.toFixed(2))
-        }).catch(err => {
-            // Silent catch for sync errors to avoid console spam
-        });
+        }).catch(() => {});
     }
 
-    // --- REALTIME: Slow Sync (HP, Score, Class) ---
     syncPlayerDetails(health: number, maxHealth: number, score: number, classPath: string) {
         if (this.isMockMode || !this.playerRef) return;
 
@@ -77,48 +123,43 @@ export class NetworkManager {
             maxHp: Math.round(maxHealth),
             score: Math.floor(score),
             classPath: classPath
-        }).catch(err => console.warn("Sync details error", err));
+        }).catch(() => {});
     }
 
     sendChat(message: string, sender: string) {
         if (this.isMockMode) return;
         if (!this.roomRef) return;
-
-        // Chat is also per-room now
-        const chatRef = ref(db, `${this.roomRef.key}/chat`);
-        push(chatRef, {
-            sender: sender,
-            content: message,
-            timestamp: Date.now()
-        }).catch(err => console.error("Chat send failed:", err));
+        const chatRef = child(this.roomRef, 'chat');
+        push(chatRef, { sender, content: message, timestamp: Date.now() });
     }
 
     on(event: string, handler: NetworkEventHandler) {
-        if (!this.handlers[event]) {
-            this.handlers[event] = [];
-        }
+        if (!this.handlers[event]) this.handlers[event] = [];
         this.handlers[event].push(handler);
     }
 
     private emit(event: string, data: any) {
-        if (this.handlers[event]) {
-            this.handlers[event].forEach(handler => handler(data));
-        }
+        if (this.handlers[event]) this.handlers[event].forEach(handler => handler(data));
     }
 
-    // --- FIREBASE RTDB LOGIC ---
+    // --- FIREBASE SETUP ---
 
-    private startFirebaseConnection(playerInfo: { name: string; tank: string; mode: GameMode; faction: FactionType }) {
+    private async startFirebaseConnection(playerInfo: { name: string; tank: string; mode: GameMode; faction: FactionType }) {
         const userId = auth.currentUser ? auth.currentUser.uid : `guest_${Math.random().toString(36).substr(2, 5)}`;
         this.myId = userId;
         
-        // CRITICAL: Room separated by Game Mode
+        // FIXED ROOM: Use a specific region ID so friends always find each other
         const roomPath = `rooms/${playerInfo.mode}`;
         
         this.roomRef = ref(db, roomPath);
         this.playerRef = ref(db, `${roomPath}/players/${userId}`);
+        this.hostRef = ref(db, `${roomPath}/host`);
+        this.entitiesRef = ref(db, `${roomPath}/world_entities`);
 
-        // 1. Set Initial Data
+        // 1. Try to become Host
+        await this.tryBecomeHost(userId);
+
+        // 2. Set Initial Player Data
         const initialData = {
             id: userId,
             name: playerInfo.name,
@@ -137,35 +178,22 @@ export class NetworkManager {
         set(this.playerRef, initialData)
             .then(() => {
                 this.isConnected = true;
-                onDisconnect(this.playerRef).remove();
-                this.emit('connected', {});
-                console.log(`[NET] Joined Room: ${roomPath}`);
+                if (this.playerRef) onDisconnect(this.playerRef).remove();
+                this.emit('connected', { isHost: this.isHost });
+                console.log(`[NET] Joined ${roomPath}. Am I Host? ${this.isHost}`);
             })
             .catch(err => {
-                console.error("Firebase join error:", err);
-                if (err.code === 'PERMISSION_DENIED') {
-                    alert("Connection Refused: Security Rules blocked access.\nPlease check Firebase Console Rules.");
-                }
-                this.emit('error', { message: "DB Connection Failed" });
+                console.error("Join Error:", err);
+                this.emit('error', { message: "Connection Failed" });
             });
 
-        // 2. Listen for Other Players
+        // 3. Listen for Players
         const playersRef = ref(db, `${roomPath}/players`);
         
         onChildAdded(playersRef, (snapshot) => {
             const data = snapshot.val();
             if (!data || data.id === this.myId) return;
-            
-            this.emit('player_joined', {
-                id: data.id,
-                name: data.name,
-                pos: { x: data.x, y: data.y },
-                classPath: data.classPath,
-                teamId: data.teamId,
-                hp: data.hp,
-                maxHp: data.maxHp,
-                score: data.score
-            });
+            this.emit('player_joined', data);
         });
 
         onChildRemoved(playersRef, (snapshot) => {
@@ -173,50 +201,72 @@ export class NetworkManager {
             if (data) this.emit('player_left', { id: data.id });
         });
 
-        // 3. Listen for Updates
         onValue(playersRef, (snapshot) => {
             const players = snapshot.val();
             if (!players) return;
-
             const updates: any[] = [];
             Object.values(players).forEach((p: any) => {
-                if (p.id !== this.myId) {
-                    updates.push({
-                        id: p.id,
-                        x: p.x,
-                        y: p.y,
-                        r: p.r,
-                        hp: p.hp,
-                        maxHp: p.maxHp,
-                        score: p.score,
-                        classPath: p.classPath
-                    });
+                if (p.id !== this.myId) updates.push(p);
+            });
+            if (updates.length > 0) this.emit('players_update', updates);
+        });
+
+        // 4. Listen for World Entities (Shapes/Bots)
+        // If I am Host, I WRITE this. If I am Client, I READ this.
+        if (!this.isHost) {
+            onValue(this.entitiesRef, (snapshot) => {
+                const data = snapshot.val();
+                if (data) {
+                    this.emit('world_snapshot', data);
                 }
             });
-            
-            if (updates.length > 0) {
-                this.emit('world_update', { entities: updates });
+        }
+
+        // 5. Host Failover (If host disconnects, try to take over)
+        onValue(this.hostRef, (snapshot) => {
+            if (!snapshot.exists() && !this.isHost && this.isConnected) {
+                // Host is gone! Try to claim.
+                this.tryBecomeHost(userId).then(() => {
+                    if (this.isHost) {
+                        this.emit('host_migration', {}); // Tell GameEngine to start spawning
+                    }
+                });
             }
         });
 
-        // 4. Listen for Chat
+        // 6. Chat
         const chatRef = ref(db, `${roomPath}/chat`);
         onChildAdded(chatRef, (snapshot) => {
             const msg = snapshot.val();
-            if (!msg) return;
-            if (Date.now() - msg.timestamp > 5000) return;
-            
-            this.emit('chat_message', {
-                sender: msg.sender,
-                content: msg.content,
-                isSystem: false
-            });
+            if (msg && Date.now() - msg.timestamp < 10000) {
+                this.emit('chat_message', { sender: msg.sender, content: msg.content });
+            }
         });
     }
 
+    private async tryBecomeHost(userId: string) {
+        if (!this.hostRef) return;
+        try {
+            const result = await runTransaction(this.hostRef, (currentHost) => {
+                if (currentHost === null) {
+                    return userId; // Claim it
+                }
+                return undefined; // Already taken
+            });
+
+            if (result.committed) {
+                this.isHost = true;
+                onDisconnect(this.hostRef).remove(); // If I disconnect, host slot opens
+            }
+        } catch (e) {
+            console.warn("Host claim race condition", e);
+        }
+    }
+
     private startMockSimulation() {
-        console.log("[NET] Local Sandbox / Mock Mode");
+        console.log("[NET] Local Sandbox");
         this.isConnected = true;
-        setTimeout(() => this.emit('connected', {}), 100);
+        this.isHost = true; // Local is always host
+        setTimeout(() => this.emit('connected', { isHost: true }), 100);
     }
 }
