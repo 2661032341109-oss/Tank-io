@@ -59,6 +59,8 @@ export class NetworkManager {
             x: Math.round(pos.x),
             y: Math.round(pos.y),
             r: parseFloat(rotation.toFixed(2))
+        }).catch(err => {
+            // Silent catch for sync errors to avoid console spam
         });
     }
 
@@ -88,7 +90,7 @@ export class NetworkManager {
             sender: sender,
             content: message,
             timestamp: Date.now()
-        });
+        }).catch(err => console.error("Chat send failed:", err));
     }
 
     on(event: string, handler: NetworkEventHandler) {
@@ -111,7 +113,6 @@ export class NetworkManager {
         this.myId = userId;
         
         // CRITICAL: Room separated by Game Mode
-        // This ensures Maze players only see Maze players, etc.
         const roomPath = `rooms/${playerInfo.mode}`;
         
         this.roomRef = ref(db, roomPath);
@@ -142,6 +143,9 @@ export class NetworkManager {
             })
             .catch(err => {
                 console.error("Firebase join error:", err);
+                if (err.code === 'PERMISSION_DENIED') {
+                    alert("Connection Refused: Security Rules blocked access.\nPlease check Firebase Console Rules.");
+                }
                 this.emit('error', { message: "DB Connection Failed" });
             });
 
@@ -150,7 +154,7 @@ export class NetworkManager {
         
         onChildAdded(playersRef, (snapshot) => {
             const data = snapshot.val();
-            if (data.id === this.myId) return;
+            if (!data || data.id === this.myId) return;
             
             this.emit('player_joined', {
                 id: data.id,
@@ -166,7 +170,7 @@ export class NetworkManager {
 
         onChildRemoved(playersRef, (snapshot) => {
             const data = snapshot.val();
-            this.emit('player_left', { id: data.id });
+            if (data) this.emit('player_left', { id: data.id });
         });
 
         // 3. Listen for Updates
@@ -199,6 +203,7 @@ export class NetworkManager {
         const chatRef = ref(db, `${roomPath}/chat`);
         onChildAdded(chatRef, (snapshot) => {
             const msg = snapshot.val();
+            if (!msg) return;
             if (Date.now() - msg.timestamp > 5000) return;
             
             this.emit('chat_message', {
