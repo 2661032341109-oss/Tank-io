@@ -230,8 +230,8 @@ export class PhysicsSystem {
       playerClass: string, 
       onDeath: (victim: Entity, killer: Entity) => void, 
       cameraManager: CameraManager, 
-      statManager: StatManager,
-      statusEffectSystem: StatusEffectSystem,
+      statManager: StatManager, 
+      statusEffectSystem: StatusEffectSystem, 
       audioManager?: AudioManager
   ) {
     const allEntities = [...entities, player];
@@ -449,8 +449,9 @@ export class PhysicsSystem {
                         target.flashTimer = 0.1;
                         PhysicsSystem.spawnFloatingText(allEntities, target.pos, Math.round(aoeDmg).toString(), '#ffaa00', false);
 
-                        target.vel.x += ((target.pos.x - center.x) / dist) * 200 * falloff;
-                        target.vel.y += ((target.pos.y - center.y) / dist) * 200 * falloff;
+                        // REMOVED EXPLOSION KNOCKBACK
+                        // target.vel.x += ((target.pos.x - center.x) / dist) * 200 * falloff;
+                        // target.vel.y += ((target.pos.y - center.y) / dist) * 200 * falloff;
                         
                         if (target.health <= 0 && !target.isDead) {
                             target.isDead = true;
@@ -471,10 +472,12 @@ export class PhysicsSystem {
         
         if (overlap > 0) {
             const isBulletCollision = entA.type === EntityType.BULLET && entB.type === EntityType.BULLET;
+            const isAnyBullet = entA.type === EntityType.BULLET || entB.type === EntityType.BULLET;
 
             if (isBulletCollision) {
                 ParticleSystem.spawnHitEffect(allEntities, { x: (entA.pos.x + entB.pos.x)/2, y: (entA.pos.y + entB.pos.y)/2 }, '#fff');
-            } else {
+            } else if (!isAnyBullet) {
+                // ONLY PUSH IF NEITHER IS A BULLET
                 // If friendly units, push them gently but don't damage
                 const totalMass = entA.mass + entB.mass;
                 const rA = entB.mass / totalMass;
