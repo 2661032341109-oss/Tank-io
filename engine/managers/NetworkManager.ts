@@ -204,6 +204,13 @@ export class NetworkManager {
                 
                 if (msg.t === 'j') { // Join
                     if (msg.d.id !== this.myId) this.emit('player_joined', msg.d);
+                } else if (msg.t === 'init') { // NEW: Initialization packet (Batch Join)
+                    if (Array.isArray(msg.d)) {
+                        console.log(`[WS] Initializing ${msg.d.length} existing players`);
+                        msg.d.forEach((p: any) => {
+                            if (p.id !== this.myId) this.emit('player_joined', p);
+                        });
+                    }
                 } else if (msg.t === 'l') { // Leave
                     this.emit('player_left', msg.d);
                 } else if (msg.t === 'u') { // Update

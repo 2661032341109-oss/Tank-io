@@ -103,15 +103,33 @@ wss.on('connection', (ws, req) => {
         teamId: null
     };
 
+    // Attach player data to the socket for easy retrieval
+    ws.playerData = player;
+
+    // 1. Send existing players TO the new player (Fix for invisible friends)
+    const existingPlayers = [];
+    room.players.forEach((client, pid) => {
+        if (client.readyState === 1 && client.playerData && pid !== userId) {
+            existingPlayers.push(client.playerData);
+        }
+    });
+
+    if (existingPlayers.length > 0) {
+        ws.send(JSON.stringify({
+            t: 'init', // Initialization packet
+            d: existingPlayers
+        }));
+    }
+
     room.players.set(userId, ws);
     
-    // Notify room of join
+    // 2. Notify others of join
     broadcast(room, {
         t: 'j', // Join
         d: player
-    });
+    }, userId);
 
-    console.log(`[${roomId}] Player joined: ${userName} (${userId})`);
+    console.log(`[${roomId}] Player joined: ${userName} (${userId}). Total: ${room.players.size}`);
 
     // Handle Messages
     ws.on('message', (message) => {
