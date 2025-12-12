@@ -6,12 +6,12 @@ import { TankGallery } from './TankGallery';
 import { BossGallery } from './BossGallery';
 import { LegalModal } from './LegalModal';
 import { PrivacyModal } from './PrivacyModal';
-import { Settings, Book, Database, Sword, Crown, Play, Cpu, LogIn, LogOut, User, Ghost, Globe, Signal, Share2 } from 'lucide-react';
+import { Settings, Book, Database, Sword, Crown, Play, Cpu, LogIn, LogOut, User, Ghost, Globe, Signal, Share2, Users } from 'lucide-react';
 
 // FIREBASE IMPORTS
 import { auth, googleProvider, db } from '../firebase';
 import { signInWithPopup, signOut, onAuthStateChanged, signInAnonymously, User as FirebaseUser } from 'firebase/auth';
-import { ref, onValue } from 'firebase/database';
+import { ref, onValue, Unsubscribe } from 'firebase/database';
 
 interface LobbyViewProps {
   onStart: (name: string, mode: GameMode, faction: FactionType, selectedClass: string, region: ServerRegion) => void;
@@ -35,7 +35,8 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
   const [isHoveringPlay, setIsHoveringPlay] = useState(false);
   
   // Realtime Data
-  const [onlineCount, setOnlineCount] = useState<number>(0);
+  const [modeCounts, setModeCounts] = useState<Record<string, number>>({});
+  const [totalOnline, setTotalOnline] = useState<number>(0);
   const [ping, setPing] = useState<number>(Math.floor(Math.random() * 20) + 15);
 
   // Auth State
@@ -69,26 +70,42 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
       return () => unsubscribeAuth();
   }, []);
 
-  // Monitor Player Count for the SELECTED mode
+  // --- NEW: GLOBAL PLAYER COUNTER SYSTEM ---
   useEffect(() => {
-      // If Sandbox, no realtime count
-      if (selectedMode === 'SANDBOX') {
-          setOnlineCount(1); // Just you
-          return;
-      }
+      const listeners: Unsubscribe[] = [];
 
-      const playersRef = ref(db, `rooms/${selectedMode}/players`);
-      const unsubscribeDB = onValue(playersRef, (snapshot) => {
-          const count = snapshot.size; 
-          setOnlineCount(count);
+      // 1. Loop through all game modes and attach listeners
+      GAME_MODES.forEach(mode => {
+          if (mode.id === 'SANDBOX') {
+              // Sandbox doesn't need DB check, usually just 0 or 1 locally
+              setModeCounts(prev => ({ ...prev, [mode.id]: 0 }));
+              return;
+          }
+
+          const playersRef = ref(db, `rooms/${mode.id}/players`);
+          const unsub = onValue(playersRef, (snapshot) => {
+              const count = snapshot.size;
+              setModeCounts(prev => {
+                  const newState = { ...prev, [mode.id]: count };
+                  // Recalculate total immediately
+                  const total = Object.values(newState).reduce((a, b) => a + b, 0);
+                  setTotalOnline(total);
+                  return newState;
+              });
+          });
+          listeners.push(unsub);
       });
 
-      return () => unsubscribeDB();
-  }, [selectedMode]);
+      // Cleanup all listeners on unmount
+      return () => {
+          listeners.forEach(unsub => unsub());
+      };
+  }, []);
 
   const handleStart = () => {
       localStorage.setItem('tank_io_nickname', name);
-      const regionData = { ...DEFAULT_REGION, occupancy: onlineCount };
+      // Pass the specific count for the selected mode
+      const regionData = { ...DEFAULT_REGION, occupancy: modeCounts[selectedMode] || 0 };
       onStart(name || 'Player', selectedMode, FactionType.NONE, 'basic', regionData);
   };
 
@@ -117,12 +134,12 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
 
   const currentModeConfig = GAME_MODES.find(m => m.id === selectedMode);
   const isAdmin = user && ADMIN_UIDS.includes(user.uid);
-  const occupancyColor = onlineCount > 40 ? 'text-red-400' : (onlineCount > 10 ? 'text-yellow-400' : 'text-green-400');
+  const occupancyColor = totalOnline > 40 ? 'text-red-400' : (totalOnline > 10 ? 'text-yellow-400' : 'text-green-400');
 
   return (
     <div className="fixed inset-0 bg-[#050505] flex items-center justify-center overflow-hidden font-sans select-none text-slate-200">
       
-      {/* Background FX (Same as before) */}
+      {/* Background FX */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden">
           <div className="absolute inset-0 opacity-20" 
                style={{ 
@@ -154,25 +171,26 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
                 </div>
             </div>
 
-            {/* SERVER STATUS */}
-            <div className="w-full max-w-md p-4 bg-slate-900/50 border-l-4 border-green-500 rounded-r-xl backdrop-blur-sm flex items-center justify-between shadow-lg relative group">
+            {/* SERVER STATUS DASHBOARD */}
+            <div className="w-full max-w-md p-4 bg-slate-900/50 border-l-4 border-green-500 rounded-r-xl backdrop-blur-sm flex items-center justify-between shadow-lg relative group transition-all hover:bg-slate-900/70">
                 <div className="flex items-center gap-4">
                     <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse shadow-[0_0_10px_#0f0]"></div>
                     <div>
-                        <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Region: {DEFAULT_REGION.name}</div>
-                        <div className="text-sm font-black text-white">{currentModeConfig?.name} Room</div>
+                        <div className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                            <Globe size={12} /> {DEFAULT_REGION.name}
+                        </div>
+                        <div className="text-sm font-black text-white">OFFICIAL SERVER</div>
                     </div>
                 </div>
                 <div className="text-right">
                     <div className={`text-2xl font-mono font-black ${occupancyColor}`}>
-                        {onlineCount} <span className="text-[10px] text-slate-500 font-sans font-bold uppercase">Active</span>
+                        {totalOnline} <span className="text-[10px] text-slate-500 font-sans font-bold uppercase">Total Players</span>
                     </div>
                     <div className="text-[10px] text-slate-500 font-bold flex items-center justify-end gap-1">
                         <Signal size={10} /> {ping}ms
                     </div>
                 </div>
                 
-                {/* Invite Button */}
                 <button 
                     onClick={handleShare}
                     className="absolute -right-12 top-1/2 -translate-y-1/2 p-3 bg-indigo-600 hover:bg-indigo-500 rounded-full shadow-lg transition-all active:scale-95 group-hover:right-[-3.5rem] opacity-0 group-hover:opacity-100"
@@ -185,7 +203,12 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
             {/* Mode Info */}
             <div className="hidden md:block w-full max-w-md p-6 glass-panel rounded-2xl relative overflow-hidden">
                 <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-cyan-500 to-transparent opacity-50"></div>
-                <h3 className="text-sm font-black text-slate-500 uppercase tracking-widest mb-2">Protocol</h3>
+                <div className="flex justify-between items-start mb-2">
+                    <h3 className="text-sm font-black text-slate-500 uppercase tracking-widest">Protocol</h3>
+                    <div className="text-xs font-bold bg-black/40 px-2 py-1 rounded text-cyan-400 border border-cyan-900">
+                        {modeCounts[selectedMode] || 0} Pilots Active
+                    </div>
+                </div>
                 <div className="text-4xl font-black text-white mb-2 neon-text" style={{ color: currentModeConfig?.color }}>
                     {currentModeConfig?.name}
                 </div>
@@ -237,23 +260,46 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
                 </div>
             </div>
 
-            {/* Mode Select */}
+            {/* Mode Select - UPDATED WITH LIVE COUNTS */}
             <div className="space-y-2">
-                <label className="text-[10px] font-black text-cyan-500 uppercase tracking-widest ml-1">Deployment Zone</label>
-                <div className="grid grid-cols-2 gap-2">
-                    {GAME_MODES.map(mode => (
-                        <button
-                            key={mode.id}
-                            onClick={() => setSelectedMode(mode.id)}
-                            className={`
-                                relative px-4 py-3 rounded-xl border-2 transition-all flex flex-col items-center justify-center gap-1 overflow-hidden
-                                ${selectedMode === mode.id ? 'bg-slate-800 border-white text-white shadow-lg scale-[1.02]' : 'bg-slate-900/40 border-slate-800 text-slate-500 hover:border-slate-600'}
-                            `}
-                            style={{ borderColor: selectedMode === mode.id ? mode.color : undefined }}
-                        >
-                            <span className={`text-xs font-black uppercase tracking-wider ${selectedMode === mode.id ? 'neon-text' : ''}`}>{mode.name}</span>
-                        </button>
-                    ))}
+                <label className="text-[10px] font-black text-cyan-500 uppercase tracking-widest ml-1">Live Deployment Zones</label>
+                <div className="grid grid-cols-1 gap-2 max-h-[200px] overflow-y-auto custom-scrollbar pr-1">
+                    {GAME_MODES.map(mode => {
+                        const count = modeCounts[mode.id] || 0;
+                        const isSelected = selectedMode === mode.id;
+                        
+                        return (
+                            <button
+                                key={mode.id}
+                                onClick={() => setSelectedMode(mode.id)}
+                                className={`
+                                    relative px-4 py-3 rounded-xl border transition-all flex items-center justify-between
+                                    ${isSelected 
+                                        ? 'bg-slate-800 border-white text-white shadow-lg translate-x-1' 
+                                        : 'bg-slate-900/40 border-slate-800 text-slate-500 hover:bg-slate-800 hover:border-slate-600'
+                                    }
+                                `}
+                                style={{ borderColor: isSelected ? mode.color : undefined }}
+                            >
+                                {/* Left: Name & Dot */}
+                                <div className="flex items-center gap-3">
+                                    <div 
+                                        className={`w-2 h-2 rounded-full ${count > 0 ? 'bg-green-500 shadow-[0_0_5px_#0f0]' : 'bg-slate-600'}`}
+                                    />
+                                    <div className="flex flex-col items-start">
+                                        <span className={`text-xs font-black uppercase tracking-wider ${isSelected ? 'neon-text' : ''}`}>{mode.name}</span>
+                                        {isSelected && <span className="text-[9px] font-bold opacity-70">Selected</span>}
+                                    </div>
+                                </div>
+
+                                {/* Right: Count */}
+                                <div className={`flex items-center gap-1.5 px-2 py-1 rounded ${count > 0 ? 'bg-slate-900 text-white' : 'bg-transparent text-slate-600'}`}>
+                                    <Users size={10} />
+                                    <span className="text-xs font-mono font-bold">{count}</span>
+                                </div>
+                            </button>
+                        );
+                    })}
                 </div>
             </div>
 
@@ -268,7 +314,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({ onStart, onOpenSettings, o
                     <div className="absolute inset-0 bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-600 opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
                     <span className="relative z-10 flex items-center justify-center gap-3 group-hover:text-white transition-colors">
                         <Play fill="currentColor" size={24} />
-                        DEPLOY ({onlineCount})
+                        JOIN BATTLE
                     </span>
                 </button>
             </div>
