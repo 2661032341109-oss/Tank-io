@@ -171,9 +171,12 @@ export class GameEngine {
   }
 
   bindNetworkEvents() {
+    // 1. JOIN EVENT
     this.networkManager.on('player_joined', (data) => {
         if (this.isDestroyed) return;
-        if (this.entityManager.entities.some(e => e.id === data.id)) return;
+        if (this.entityManager.entities.some(e => e.id === data.id)) return; // Already exists
+
+        console.log("Player Joined via Network:", data.name);
 
         const newPlayer: Entity = {
             id: data.id,
@@ -191,12 +194,13 @@ export class GameEngine {
             isDead: false,
             teamId: data.teamId,
             classPath: data.classPath || 'basic',
-            scoreValue: 0
+            scoreValue: data.score || 0
         };
         this.entityManager.add(newPlayer);
         this.notificationManager.push(`${data.name} joined.`, 'info');
     });
 
+    // 2. LEAVE EVENT
     this.networkManager.on('player_left', (data) => {
         if (this.isDestroyed) return;
         const idx = this.entityManager.entities.findIndex(e => e.id === data.id);
@@ -207,7 +211,17 @@ export class GameEngine {
         }
     });
 
-    // Note: World Update is now handled via processInterpolation in main loop
+    // 3. CHAT EVENT
+    this.networkManager.on('chat_message', (data) => {
+        if (this.isDestroyed) return;
+        this.chatManager.addMessage(data.sender, data.content);
+        
+        // Visual Floating Text over tank
+        const sender = this.entityManager.entities.find(e => e.name === data.sender) || (this.playerManager.entity.name === data.sender ? this.playerManager.entity : null);
+        if (sender) {
+            PhysicsSystem.spawnFloatingText(this.entityManager.entities, sender.pos, data.content, '#fff', false);
+        }
+    });
   }
 
   update(dt: number) {
@@ -217,13 +231,13 @@ export class GameEngine {
 
     this.chatManager.update(dt, entities);
 
-    // --- NETWORKING: Send Client Prediction ---
+    // --- NETWORKING ---
     if (!player.isDead) {
         this.networkManager.syncPlayerState(player.pos, player.vel, player.rotation);
         this.networkManager.syncPlayerDetails(player.health, player.maxHealth, this.playerManager.state.score, this.playerManager.state.classPath);
     }
 
-    // --- NETWORKING: Process Interpolation (The Magic) ---
+    // *** MAGIC LINE: Updates positions of other players from Server Binary Data ***
     this.networkManager.processInterpolation(entities);
 
     const handleDeath = (v: Entity, k: Entity) => {
@@ -237,19 +251,13 @@ export class GameEngine {
         this.playerManager.state.notifications = this.notificationManager.notifications;
     }
     
-    // Server-side spawn logic removed from client if purely client-side
-    // But for this hybrid setup, we keep local spawning for single player feel if needed
-    // In Binary Mode, entities should come from server snap, but we haven't implemented full entity sync for shapes yet
-    // So we keep local shape spawning for visual feedback in this demo.
-
+    // Standard Local Updates
     this.playerManager.update(dt);
     this.playerController.update(dt, entities, this.pushNotification.bind(this));
     if (!player.isDead) {
         this.playerController.handleFiring(dt, entities, handleHitscan);
     }
     
-    // AI and World updates run locally for responsiveness in this Hybrid setup
-    // In a pure Authoritative setup, these would only run on server.
     this.aiController.update(dt, entities, player, this.cameraManager, handleDeath);
     this.worldController.update(dt, this.playerController.autoSpin, this.cameraManager, handleDeath);
     

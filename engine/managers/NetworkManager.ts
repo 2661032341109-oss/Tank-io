@@ -25,7 +25,7 @@ export class NetworkManager {
     public isHost: boolean = false; 
     
     private myId: string | null = null;
-    private myNetId: number | null = null; // Short ID for binary mapping
+    private myNetId: number | null = null;
     
     private ws: WebSocket | null = null;
 
@@ -33,7 +33,7 @@ export class NetworkManager {
     private snapshots: Snapshot[] = [];
     private netIdMap: Map<number, string> = new Map(); // Map Numeric ID -> String ID
     private serverTimeOffset: number = 0;
-    private renderDelay: number = 100; // 100ms delay for smoothness
+    private renderDelay: number = 100;
 
     constructor() {}
 
@@ -42,7 +42,7 @@ export class NetworkManager {
         if (region.url.startsWith('ws')) {
             this.connectWebSocket(region.url, playerInfo);
         } else {
-            this.startFirebaseConnection(playerInfo); // Fallback
+            this.startFirebaseConnection(playerInfo); 
         }
     }
 
@@ -57,7 +57,79 @@ export class NetworkManager {
         this.handlers = {};
     }
 
-    // --- BINARY PACKET PROCESSING ---
+    // --- PACKET HANDLING ---
+    private connectWebSocket(url: string, playerInfo: any) {
+        const userId = auth.currentUser ? auth.currentUser.uid : `guest_${Math.random().toString(36).substr(2, 5)}`;
+        this.myId = userId;
+
+        let wsUrl = url;
+        if (url === 'public') {
+             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+             wsUrl = `${protocol}//${window.location.host}`;
+        }
+        wsUrl += `?room=${playerInfo.mode}&uid=${userId}&name=${encodeURIComponent(playerInfo.name)}`;
+
+        this.ws = new WebSocket(wsUrl);
+        this.ws.binaryType = "arraybuffer"; // CRITICAL: We want binary frames as ArrayBuffer
+
+        this.ws.onopen = () => {
+            console.log("[WS] Connected");
+            this.isConnected = true;
+            this.emit('connected', { isHost: false });
+        };
+
+        this.ws.onmessage = (event) => {
+            // HYBRID PROTOCOL CHECK
+            if (event.data instanceof ArrayBuffer) {
+                // BINARY FRAME (Physics/Movement)
+                this.processBinaryPacket(event.data);
+            } else {
+                // TEXT FRAME (JSON Events: Chat, Join, Leave)
+                try {
+                    const msg = JSON.parse(event.data as string);
+                    this.handleJsonPacket(msg);
+                } catch (e) {
+                    console.error("[WS] JSON Parse error", e);
+                }
+            }
+        };
+        
+        this.ws.onclose = () => { this.isConnected = false; this.emit('disconnected', {}); };
+        this.ws.onerror = (e) => console.error("[WS] Error", e);
+    }
+
+    private handleJsonPacket(msg: any) {
+        if (msg.t === 'hello') {
+            this.myNetId = msg.netId;
+            this.netIdMap.set(msg.netId, this.myId!);
+            console.log(`[WS] Handshake. NetID: ${this.myNetId}`);
+        }
+        else if (msg.t === 'init') {
+            // Received list of existing players
+            msg.d.forEach((p: any) => {
+                this.netIdMap.set(p.netId, p.id);
+                this.emit('player_joined', p); // Inform GameEngine to spawn them
+            });
+        }
+        else if (msg.t === 'j') {
+            // New player joined
+            this.netIdMap.set(msg.d.netId, msg.d.id);
+            if (msg.d.id !== this.myId) {
+                this.emit('player_joined', msg.d);
+            }
+        }
+        else if (msg.t === 'l') {
+            // Player left
+            // We need to clean up netIdMap too, though it's not strictly critical
+            // Reverse lookup is expensive, so we just leak the int ID mapping or clear on disconnect
+            this.emit('player_left', msg.d);
+        }
+        else if (msg.t === 'c') {
+            // Chat message
+            this.emit('chat_message', msg.d);
+        }
+    }
+
     private processBinaryPacket(buffer: ArrayBuffer) {
         const view = new DataView(buffer);
         let offset = 0;
@@ -73,20 +145,17 @@ export class NetworkManager {
                 entities: new Map()
             };
 
-            // Calculate server time offset to sync clocks
             const now = Date.now();
-            // Simple sync: average offset (can be improved)
             this.serverTimeOffset = serverTime - now; 
 
             for (let i = 0; i < count; i++) {
                 const netId = view.getUint16(offset, true); offset += 2;
-                const type = view.getUint8(offset); offset += 1;
                 
-                // Unpack Coordinates (Mapped * 10)
-                const x = view.getUint16(offset, true) / 10; offset += 2;
-                const y = view.getUint16(offset, true) / 10; offset += 2;
+                // Unpack Position (0-65535 -> 0-5000)
+                const x = (view.getUint16(offset, true) / 10); offset += 2;
+                const y = (view.getUint16(offset, true) / 10); offset += 2;
                 
-                // Unpack Rotation (0-255 -> 0-2PI)
+                // Unpack Rotation
                 const rotByte = view.getUint8(offset); offset += 1;
                 const r = (rotByte / 255) * (Math.PI * 2);
 
@@ -97,22 +166,18 @@ export class NetworkManager {
             }
 
             this.snapshots.push(snapshot);
-            // Keep buffer small (20 snapshots ~ 1 sec)
             if (this.snapshots.length > 20) this.snapshots.shift();
         }
     }
 
-    // --- MAIN UPDATE LOOP (INTERPOLATION) ---
-    // Called by GameEngine every frame
+    // --- GAME LOOP INTERFACE ---
     public processInterpolation(entities: Entity[]) {
         if (this.snapshots.length < 2) return;
 
-        // Calculate Render Time (Current Time - Delay)
-        // We render what happened 100ms ago to ensure we have data "surrounding" that moment
         const now = Date.now();
         const renderTime = now + this.serverTimeOffset - this.renderDelay;
 
-        // Find two snapshots surrounding renderTime
+        // Find surrounding snapshots
         let prev: Snapshot | null = null;
         let next: Snapshot | null = null;
 
@@ -120,50 +185,45 @@ export class NetworkManager {
             const snap = this.snapshots[i];
             if (snap.time <= renderTime) {
                 prev = snap;
-                next = this.snapshots[i + 1]; // Can be undefined
+                next = this.snapshots[i + 1];
                 break;
             }
         }
 
-        if (!prev || !next) return; // Not enough data yet
+        if (!prev || !next) return;
 
-        // Interpolation Factor (0.0 to 1.0)
         const total = next.time - prev.time;
         const current = renderTime - prev.time;
         const ratio = Math.max(0, Math.min(1, current / total));
 
-        // Apply to Entities
         next.entities.forEach((nextState, netId) => {
-            if (netId === this.myNetId) return; // Don't interpolate self (Prediction handles self)
+            if (netId === this.myNetId) return; // Don't interpolate self
 
             const stringId = this.netIdMap.get(netId);
-            if (!stringId) return; // Entity not known yet
+            if (!stringId) return; 
 
             const entity = entities.find(e => e.id === stringId);
             const prevState = prev!.entities.get(netId);
 
             if (entity && prevState) {
-                // Smooth LERP
+                // Linear Interpolation
                 entity.pos.x = prevState.x + (nextState.x - prevState.x) * ratio;
                 entity.pos.y = prevState.y + (nextState.y - prevState.y) * ratio;
                 
-                // Angle Lerp (Shortest path)
+                // Rot Interpolation
                 let da = nextState.r - prevState.r;
                 if (da > Math.PI) da -= Math.PI * 2;
                 if (da < -Math.PI) da += Math.PI * 2;
                 entity.rotation = prevState.r + da * ratio;
 
-                // Sync HP (Visual only)
                 entity.health = (nextState.hpPct / 100) * entity.maxHealth;
             }
         });
     }
 
-    // ... (Old Sync methods kept for compatibility with Firebase fallback) ...
+    // Client -> Server Input
     syncPlayerState(pos: {x: number, y: number}, vel: {x: number, y: number}, rotation: number) {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            // Sending Input as JSON is fine for now (Client->Server bandwidth is low)
-            // Ideally this would be binary too
             this.ws.send(JSON.stringify({ 
                 t: 'i', 
                 d: { 
@@ -178,76 +238,18 @@ export class NetworkManager {
     }
     
     syncPlayerDetails(health: number, maxHealth: number, score: number, classPath: string) {
-        // Reduced frequency updates can stay JSON
         if (this.ws && this.ws.readyState === WebSocket.OPEN && Math.random() < 0.05) {
              this.ws.send(JSON.stringify({ t: 's', d: { hp: health, maxHp: maxHealth, score, classPath } }));
         }
     }
 
-    private connectWebSocket(url: string, playerInfo: any) {
-        const userId = auth.currentUser ? auth.currentUser.uid : `guest_${Math.random().toString(36).substr(2, 5)}`;
-        this.myId = userId;
-
-        let wsUrl = url;
-        if (url === 'public') {
-             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-             wsUrl = `${protocol}//${window.location.host}`;
-        }
-        wsUrl += `?room=${playerInfo.mode}&uid=${userId}&name=${encodeURIComponent(playerInfo.name)}`;
-
-        this.ws = new WebSocket(wsUrl);
-        this.ws.binaryType = "arraybuffer"; // CRITICAL
-
-        this.ws.onopen = () => {
-            console.log("[WS] Connected");
-            this.isConnected = true;
-            this.emit('connected', { isHost: false });
-        };
-
-        this.ws.onmessage = (event) => {
-            if (event.data instanceof ArrayBuffer) {
-                this.processBinaryPacket(event.data);
-            } else {
-                try {
-                    const msg = JSON.parse(event.data as string);
-                    
-                    if (msg.t === 'hello') {
-                        this.myNetId = msg.netId;
-                        this.netIdMap.set(msg.netId, this.myId!);
-                        console.log(`[WS] Handshake. NetID: ${this.myNetId}`);
-                    }
-                    else if (msg.t === 'init') {
-                        msg.d.forEach((p: any) => {
-                            this.netIdMap.set(p.netId, p.id);
-                            this.emit('player_joined', p);
-                        });
-                    }
-                    else if (msg.t === 'j') {
-                        this.netIdMap.set(msg.d.netId, msg.d.id);
-                        if (msg.d.id !== this.myId) this.emit('player_joined', msg.d);
-                    }
-                    else if (msg.t === 'l') {
-                        this.emit('player_left', msg.d);
-                    }
-                    else if (msg.t === 'c') {
-                        this.emit('chat_message', msg.d);
-                    }
-                } catch (e) { console.error(e); }
-            }
-        };
-        
-        this.ws.onclose = () => { this.isConnected = false; this.emit('disconnected', {}); };
-    }
-
-    // ... (Legacy Firebase methods kept for fallback) ...
     sendChat(message: string, sender: string) {
-        if (this.ws) this.ws.send(JSON.stringify({ t: 'c', d: message }));
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ t: 'c', d: message }));
+        }
     }
-    
-    // --- HOST LOGIC (STUB) ---
-    // In Binary Mode, Host Logic is server-side.
-    syncWorldEntities(entities: Entity[]) {} 
 
+    // --- EVENT LISTENERS ---
     on(event: string, handler: NetworkEventHandler) {
         if (!this.handlers[event]) this.handlers[event] = [];
         this.handlers[event].push(handler);
@@ -257,7 +259,8 @@ export class NetworkManager {
         if (this.handlers[event]) this.handlers[event].forEach(handler => handler(data));
     }
     
-    // Stub for Firebase fallback
+    // Legacy / Mock Stubs
+    syncWorldEntities(entities: Entity[]) {} 
     private async startFirebaseConnection(playerInfo: any) { }
     private startMockSimulation() { }
 }
