@@ -47,6 +47,9 @@ export interface EntitySnapshot {
     hp: number; // Health % or value
     c?: string; // Color (Optional, mainly for init)
     s?: number; // Size/Radius (Optional)
+    maxHp?: number;
+    score?: number;
+    classPath?: string;
 }
 
 export interface WorldSnapshot {
