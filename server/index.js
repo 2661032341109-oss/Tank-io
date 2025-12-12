@@ -103,27 +103,30 @@ wss.on('connection', (ws, req) => {
         teamId: null
     };
 
-    // Attach player data to the socket for easy retrieval
+    // Attach player data to the socket for easy retrieval (Standard Practice)
     ws.playerData = player;
 
-    // 1. Send existing players TO the new player (Fix for invisible friends)
+    // --- STANDARD SYNC: Send Existing Players to Newcomer ---
     const existingPlayers = [];
     room.players.forEach((client, pid) => {
+        // Filter out self and ensure connection is open
         if (client.readyState === 1 && client.playerData && pid !== userId) {
             existingPlayers.push(client.playerData);
         }
     });
 
+    // Send 'init' packet immediately
     if (existingPlayers.length > 0) {
         ws.send(JSON.stringify({
-            t: 'init', // Initialization packet
-            d: existingPlayers
+            t: 'init', // Initialization Type
+            d: existingPlayers // Data: Array of players
         }));
     }
 
+    // Register Player
     room.players.set(userId, ws);
     
-    // 2. Notify others of join
+    // Notify others of join
     broadcast(room, {
         t: 'j', // Join
         d: player
