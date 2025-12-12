@@ -157,7 +157,10 @@ export class PhysicsSystem {
               ent.pos.y += ent.vel.y * dt;
               ent.vel.x *= 0.95;
               ent.vel.y += 300 * dt;
-              ent.opacity = Math.max(0, (ent.lifespan || 0) / 0.8);
+              
+              // Safe access for opacity calculation
+              const life = ent.lifespan ?? 0;
+              ent.opacity = Math.max(0, life / 0.8);
               
               // Fixed lifespan check for Floating Text
               if (ent.lifespan !== undefined) {
