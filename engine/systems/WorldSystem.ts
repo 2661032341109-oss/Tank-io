@@ -77,9 +77,11 @@ export class WorldSystem {
         const isGreen = Math.random() < 0.005;
         if (isGreen) variant = 'GREEN';
 
+        const uid = Math.random().toString(36).slice(2);
+
         if (isCrasher) {
              entities.push({
-                id: `crasher_${Math.random()}`,
+                id: `crasher_${uid}`,
                 type: EntityType.CRASHER,
                 pos: pos,
                 vel: { x: (Math.random() - 0.5) * 5, y: (Math.random() - 0.5) * 5 },
@@ -108,7 +110,7 @@ export class WorldSystem {
             if (variant === 'GOLDEN_HEART') { score = 90; }
 
             entities.push({
-                id: `shape_${Math.random()}`,
+                id: `shape_${uid}`,
                 type: EntityType.SHAPE,
                 pos: pos,
                 vel: { x: (Math.random() - 0.5) * 10, y: (Math.random() - 0.5) * 10 },
