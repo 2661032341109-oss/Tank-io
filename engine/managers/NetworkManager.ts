@@ -12,17 +12,22 @@ export class NetworkManager {
     public isHost: boolean = false; 
     
     private myId: string | null = null;
+    
+    // Firebase Refs
     private roomRef: DatabaseReference | null = null;
     private playerRef: DatabaseReference | null = null;
     private hostRef: DatabaseReference | null = null;
     private entitiesRef: DatabaseReference | null = null;
+
+    // WebSocket Ref
+    private ws: WebSocket | null = null;
 
     // Throttling
     private lastInputSendTime: number = 0;
     private lastSlowUpdateSendTime: number = 0;
     private lastWorldSyncTime: number = 0;
     
-    // 20 FPS is good balance for Firebase
+    // 20 FPS is good balance for Firebase/WS
     private readonly INPUT_RATE = 1000 / 20; 
     private readonly SLOW_UPDATE_RATE = 2000;
     private readonly WORLD_SYNC_RATE = 1000 / 10; 
@@ -32,16 +37,24 @@ export class NetworkManager {
     connect(region: ServerRegion, playerInfo: { name: string; tank: string; mode: GameMode; faction: FactionType }) {
         console.log(`[NET] Connecting to ${region.name} (${playerInfo.mode})...`);
         
-        this.isMockMode = region.type === 'LOCAL' || playerInfo.mode === 'SANDBOX';
-
-        if (this.isMockMode) {
+        // Determine Mode
+        if (region.type === 'LOCAL' || playerInfo.mode === 'SANDBOX') {
+            this.isMockMode = true;
             this.startMockSimulation();
+        } else if (region.url.startsWith('ws')) {
+            // WEBSOCKET MODE (Railway/Node)
+            this.connectWebSocket(region.url, playerInfo);
         } else {
+            // FIREBASE MODE (Legacy)
             this.startFirebaseConnection(playerInfo);
         }
     }
 
     disconnect() {
+        if (this.ws) {
+            this.ws.close();
+            this.ws = null;
+        }
         if (this.playerRef) {
             remove(this.playerRef);
             this.playerRef = null;
@@ -99,43 +112,58 @@ export class NetworkManager {
     }
 
     // --- CLIENT LOGIC ---
-    // UPDATED: Now sends Velocity (vx, vy) for Dead Reckoning
     syncPlayerState(pos: {x: number, y: number}, vel: {x: number, y: number}, rotation: number) {
-        if (this.isMockMode || !this.playerRef) return;
+        if (this.isMockMode) return;
         
         const now = Date.now();
         if (now - this.lastInputSendTime < this.INPUT_RATE) return;
         this.lastInputSendTime = now;
 
-        update(this.playerRef, {
+        const data = {
             x: Math.round(pos.x),
             y: Math.round(pos.y),
             vx: Math.round(vel.x),
             vy: Math.round(vel.y),
             r: Number(rotation.toFixed(2))
-        }).catch(() => {});
+        };
+
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ t: 'i', d: data }));
+        } else if (this.playerRef) {
+            update(this.playerRef, data).catch(() => {});
+        }
     }
 
     syncPlayerDetails(health: number, maxHealth: number, score: number, classPath: string) {
-        if (this.isMockMode || !this.playerRef) return;
+        if (this.isMockMode) return;
 
         const now = Date.now();
         if (now - this.lastSlowUpdateSendTime < this.SLOW_UPDATE_RATE) return;
         this.lastSlowUpdateSendTime = now;
 
-        update(this.playerRef, {
+        const data = {
             hp: Math.round(health),
             maxHp: Math.round(maxHealth),
             score: Math.floor(score),
             classPath: classPath
-        }).catch(() => {});
+        };
+
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ t: 's', d: data }));
+        } else if (this.playerRef) {
+            update(this.playerRef, data).catch(() => {});
+        }
     }
 
     sendChat(message: string, sender: string) {
         if (this.isMockMode) return;
-        if (!this.roomRef) return;
-        const chatRef = child(this.roomRef, 'chat');
-        push(chatRef, { sender, content: message, timestamp: Date.now() });
+        
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ t: 'c', d: message }));
+        } else if (this.roomRef) {
+            const chatRef = child(this.roomRef, 'chat');
+            push(chatRef, { sender, content: message, timestamp: Date.now() });
+        }
     }
 
     on(event: string, handler: NetworkEventHandler) {
@@ -145,6 +173,58 @@ export class NetworkManager {
 
     private emit(event: string, data: any) {
         if (this.handlers[event]) this.handlers[event].forEach(handler => handler(data));
+    }
+
+    // --- WEBSOCKET SETUP (RAILWAY) ---
+    private connectWebSocket(url: string, playerInfo: any) {
+        const userId = auth.currentUser ? auth.currentUser.uid : `guest_${Math.random().toString(36).substr(2, 5)}`;
+        this.myId = userId;
+
+        // Construct WS URL with query params for handshake
+        // If relative URL (for same-origin deployment), use window.location
+        let wsUrl = url;
+        if (url === 'public') { // Flag used in LobbyView
+             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+             wsUrl = `${protocol}//${window.location.host}`;
+        }
+
+        wsUrl += `?room=${playerInfo.mode}&uid=${userId}&name=${encodeURIComponent(playerInfo.name)}`;
+
+        this.ws = new WebSocket(wsUrl);
+
+        this.ws.onopen = () => {
+            console.log("[WS] Connected");
+            this.isConnected = true;
+            this.emit('connected', { isHost: false }); // WS Server is always host
+        };
+
+        this.ws.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data as string);
+                
+                if (msg.t === 'j') { // Join
+                    if (msg.d.id !== this.myId) this.emit('player_joined', msg.d);
+                } else if (msg.t === 'l') { // Leave
+                    this.emit('player_left', msg.d);
+                } else if (msg.t === 'u') { // Update
+                    this.emit('players_update', [msg.d]);
+                } else if (msg.t === 'c') { // Chat
+                    this.emit('chat_message', msg.d);
+                }
+            } catch (e) {
+                console.error("[WS] Parse error", e);
+            }
+        };
+
+        this.ws.onclose = () => {
+            console.log("[WS] Closed");
+            this.isConnected = false;
+            this.emit('disconnected', {});
+        };
+
+        this.ws.onerror = (e) => {
+            console.error("[WS] Error", e);
+        };
     }
 
     // --- FIREBASE SETUP ---

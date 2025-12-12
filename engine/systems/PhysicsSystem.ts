@@ -89,8 +89,8 @@ export class PhysicsSystem {
                   ent.isDead = true;
               }
               
-              // Fixed lifespan check
-              if (ent.lifespan !== undefined) {
+              // Fixed lifespan check (Strict Type)
+              if (typeof ent.lifespan === 'number') {
                   ent.lifespan -= dt;
                   if (ent.lifespan <= 0) ent.isDead = true;
               }
@@ -158,12 +158,12 @@ export class PhysicsSystem {
               ent.vel.x *= 0.95;
               ent.vel.y += 300 * dt;
               
-              // Safe access for opacity calculation
-              const life = ent.lifespan ?? 0;
+              // Safe access for opacity
+              const life = typeof ent.lifespan === 'number' ? ent.lifespan : 0;
               ent.opacity = Math.max(0, life / 0.8);
               
-              // Fixed lifespan check for Floating Text
-              if (ent.lifespan !== undefined) {
+              // Fixed lifespan check for Floating Text (Strict Type)
+              if (typeof ent.lifespan === 'number') {
                   ent.lifespan -= dt;
                   if (ent.lifespan <= 0) ent.isDead = true;
               }
