@@ -89,8 +89,11 @@ export class SpawnManager {
             spawnPos.x = (spawnPos.x + 2000) % WORLD_SIZE;
         }
 
+        const safeId = Math.random().toString(36).slice(2);
+
         entities.push({
-            id: `boss_${Date.now()}`, type: EntityType.BOSS, bossType: type, pos: spawnPos, vel: { x: 0, y: 0 },
+            id: `boss_${safeId}`, 
+            type: EntityType.BOSS, bossType: type, pos: spawnPos, vel: { x: 0, y: 0 },
             radius: config.radius, rotation: 0, color: config.color, health: config.hp, maxHealth: config.hp, damage: config.damage,
             isDead: false, scoreValue: config.xp, aiState: 'IDLE', attackCooldown: 0, teamId: 'BOSS', lastDamageTime: 0
         });
@@ -113,8 +116,10 @@ export class SpawnManager {
         else if (side === 2) { x = Math.random() * WORLD_SIZE; y = WORLD_SIZE; }
         else { x = 0; y = Math.random() * WORLD_SIZE; }
 
+        const safeId = Math.random().toString(36).slice(2);
+
         entities.push({
-            id: `arena_closer_${Date.now()}_${Math.random()}`,
+            id: `arena_closer_${safeId}`,
             name: "Arena Closer",
             type: EntityType.ENEMY, 
             pos: { x, y },
@@ -142,9 +147,10 @@ export class SpawnManager {
             x: (SANDBOX_SIZE * 1.5)/2 + (Math.random() - 0.5) * 500, 
             y: (SANDBOX_SIZE * 1.5)/2 + (Math.random() - 0.5) * 500 
         };
+        const safeId = Math.random().toString(36).slice(2);
         
         entities.push({
-            id: `dummy_${Math.random()}`,
+            id: `dummy_${safeId}`,
             type: EntityType.ENEMY,
             pos: pos,
             vel: { x: 0, y: 0 },

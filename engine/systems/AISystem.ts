@@ -37,6 +37,9 @@ export class AISystem {
           let teamId = undefined;
           let color = COLORS.enemy;
 
+          // FIXED: Safe ID
+          const safeId = Math.random().toString(36).slice(2);
+
           if (gameMode === 'TEAMS_2') {
              teamId = Math.random() < 0.5 ? 'BLUE' : 'RED';
           } else if (gameMode === 'TEAMS_4') {
@@ -46,7 +49,7 @@ export class AISystem {
              else if (rand < 0.75) teamId = 'GREEN';
              else teamId = 'PURPLE';
           } else if (gameMode === 'FFA' || gameMode === 'MAZE') {
-             teamId = `BOT_${Math.random()}`; 
+             teamId = `BOT_${safeId}`; 
              color = COLORS.enemy;
           }
 
@@ -85,7 +88,7 @@ export class AISystem {
           const currentClass = build.path[tierIndex];
 
           entities.push({
-              id: `bot_${Math.random()}`,
+              id: `bot_${safeId}`,
               name: name,
               type: EntityType.ENEMY,
               pos: getSpawnPos(teamId && !teamId.startsWith('BOT') ? teamId : undefined),
@@ -262,10 +265,11 @@ export class AISystem {
       for(let i=0; i<count; i++) {
           const angle = boss.rotation + (Math.random() - 0.5);
           const vel = { x: Math.cos(angle) * 150, y: Math.sin(angle) * 150 };
-          
+          const safeId = Math.random().toString(36).slice(2);
+
           if (type === EntityType.CRASHER) {
               entities.push({
-                id: `minion_${Math.random()}`,
+                id: `minion_${safeId}`,
                 type: EntityType.CRASHER,
                 pos: { x: boss.pos.x, y: boss.pos.y },
                 vel: vel,
@@ -285,7 +289,7 @@ export class AISystem {
              });
           } else {
              entities.push({
-                id: `minion_${Math.random()}`,
+                id: `minion_${safeId}`,
                 type: EntityType.DRONE,
                 pos: { x: boss.pos.x, y: boss.pos.y },
                 vel: vel,

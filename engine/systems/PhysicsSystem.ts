@@ -296,9 +296,7 @@ export class PhysicsSystem {
 
             if (entA.id === entB.id || entA.ownerId === entB.id || entB.ownerId === entA.id) continue;
             
-            // --- FIXED: FRIENDLY FIRE LOGIC ---
-            // 1. If same team, projectiles pass through instantly (no collision).
-            // 2. Tanks still collide to push each other, but take no damage.
+            // --- STRICT FRIENDLY FIRE CHECK ---
             if (entA.teamId && entB.teamId && entA.teamId === entB.teamId) {
                 const isProjectileA = entA.type === EntityType.BULLET || entA.type === EntityType.DRONE || entA.type === EntityType.TRAP;
                 const isProjectileB = entB.type === EntityType.BULLET || entB.type === EntityType.DRONE || entB.type === EntityType.TRAP;
@@ -331,7 +329,7 @@ export class PhysicsSystem {
             if (target.ownerId && bullet.ownerId && target.ownerId === bullet.ownerId) continue;
             if (target.type === EntityType.BULLET && !GAME_RULES.BULLET_TO_BULLET_COLLISION) continue;
             
-            // --- FIXED: FRIENDLY FIRE LOGIC (CCD) ---
+            // --- STRICT FRIENDLY FIRE CHECK (CCD) ---
             if (target.teamId && bullet.teamId && target.teamId === bullet.teamId) continue;
 
             if (target.type === EntityType.PARTICLE || target.type === EntityType.FLOATING_TEXT || target.type === EntityType.ZONE) continue;
@@ -374,10 +372,10 @@ export class PhysicsSystem {
         if (!entA.mass) entA.mass = statManager.getEntityMass(entA);
         if (!entB.mass) entB.mass = statManager.getEntityMass(entB);
         
-        // --- FIXED: FRIENDLY FIRE DAMAGE CHECK ---
+        // --- STRICT FRIENDLY FIRE CHECK (DAMAGE) ---
         const isFriendly = entA.teamId && entB.teamId && entA.teamId === entB.teamId;
 
-        // Force damage to 0 if friendly
+        // If friendly, NO DAMAGE
         let dmgA = isFriendly ? 0 : entA.damage;
         let dmgB = isFriendly ? 0 : entB.damage;
 
@@ -431,8 +429,7 @@ export class PhysicsSystem {
                 
                 allEntities.forEach(target => {
                     if (target.isDead || target.id === source.id || target.id === source.ownerId || target.type === EntityType.PARTICLE) return;
-                    
-                    // FIXED: AOE Friendly Check
+                    // AOE FRIENDLY FIRE CHECK
                     if (target.teamId && source.teamId && target.teamId === source.teamId) return;
 
                     const dist = Math.hypot(target.pos.x - center.x, target.pos.y - center.y);
@@ -469,6 +466,7 @@ export class PhysicsSystem {
             if (isBulletCollision) {
                 ParticleSystem.spawnHitEffect(allEntities, { x: (entA.pos.x + entB.pos.x)/2, y: (entA.pos.y + entB.pos.y)/2 }, '#fff');
             } else {
+                // If friendly units, push them gently but don't damage
                 const totalMass = entA.mass + entB.mass;
                 const rA = entB.mass / totalMass;
                 const rB = entA.mass / totalMass;
@@ -545,7 +543,7 @@ export class PhysicsSystem {
       for (const target of allEntities) {
           if (target.isDead || target.id === owner.id || target.id === owner.ownerId) continue;
           
-          // --- FIXED: FRIENDLY FIRE HITSCAN ---
+          // --- STRICT FRIENDLY FIRE CHECK (HITSCAN) ---
           if (target.teamId && owner.teamId && target.teamId === owner.teamId) continue; 
 
           if (target.type === EntityType.PARTICLE || target.type === EntityType.FLOATING_TEXT || target.type === EntityType.ZONE) continue;

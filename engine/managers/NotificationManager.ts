@@ -6,7 +6,7 @@ export class NotificationManager {
 
     push(message: string, type: 'info' | 'warning' | 'success' | 'boss' = 'info') {
         this.notifications.push({ 
-            id: Math.random().toString(36), 
+            id: Math.random().toString(36).slice(2), 
             message, 
             type, 
             timestamp: Date.now() 

@@ -77,9 +77,12 @@ export class WorldSystem {
         const isGreen = Math.random() < 0.005;
         if (isGreen) variant = 'GREEN';
 
+        // FIXED: Use toString(36).slice(2) to generate clean IDs without dots
+        const safeId = Math.random().toString(36).slice(2);
+
         if (isCrasher) {
              entities.push({
-                id: `crasher_${Math.random()}`,
+                id: `crasher_${safeId}`,
                 type: EntityType.CRASHER,
                 pos: pos,
                 vel: { x: (Math.random() - 0.5) * 5, y: (Math.random() - 0.5) * 5 },
@@ -108,7 +111,7 @@ export class WorldSystem {
             if (variant === 'GOLDEN_HEART') { score = 90; }
 
             entities.push({
-                id: `shape_${Math.random()}`,
+                id: `shape_${safeId}`,
                 type: EntityType.SHAPE,
                 pos: pos,
                 vel: { x: (Math.random() - 0.5) * 10, y: (Math.random() - 0.5) * 10 },

@@ -82,8 +82,9 @@ export class ZoneSystem {
     }
 
     static spawnBaseDrone(entities: Entity[], zone: Entity, target: Entity) {
+        const safeId = Math.random().toString(36).slice(2);
         entities.push({
-           id: `base_drone_${Math.random()}`,
+           id: `base_drone_${safeId}`,
            type: EntityType.DRONE,
            pos: { x: zone.pos.x, y: zone.pos.y },
            vel: { x: 0, y: 0 },
