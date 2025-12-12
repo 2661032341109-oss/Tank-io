@@ -88,7 +88,9 @@ export class PhysicsSystem {
               if (ent.pos.x < 0 || ent.pos.x > mapWidth || ent.pos.y < 0 || ent.pos.y > mapHeight) {
                   ent.isDead = true;
               }
-              if (ent.lifespan) {
+              
+              // Fixed lifespan check
+              if (ent.lifespan !== undefined) {
                   ent.lifespan -= dt;
                   if (ent.lifespan <= 0) ent.isDead = true;
               }
@@ -156,8 +158,12 @@ export class PhysicsSystem {
               ent.vel.x *= 0.95;
               ent.vel.y += 300 * dt;
               ent.opacity = Math.max(0, (ent.lifespan || 0) / 0.8);
-              if (ent.lifespan) ent.lifespan -= dt;
-              if (ent.lifespan <= 0) ent.isDead = true;
+              
+              // Fixed lifespan check for Floating Text
+              if (ent.lifespan !== undefined) {
+                  ent.lifespan -= dt;
+                  if (ent.lifespan <= 0) ent.isDead = true;
+              }
           }
       });
   }
@@ -220,7 +226,7 @@ export class PhysicsSystem {
       activeAbilityTimer: number, 
       playerClass: string, 
       onDeath: (victim: Entity, killer: Entity) => void, 
-      cameraManager: CameraManager,
+      cameraManager: CameraManager, 
       statManager: StatManager,
       statusEffectSystem: StatusEffectSystem,
       audioManager?: AudioManager
