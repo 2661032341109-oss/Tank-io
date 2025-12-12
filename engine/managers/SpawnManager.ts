@@ -113,10 +113,8 @@ export class SpawnManager {
         else if (side === 2) { x = Math.random() * WORLD_SIZE; y = WORLD_SIZE; }
         else { x = 0; y = Math.random() * WORLD_SIZE; }
 
-        const uid = Math.random().toString(36).slice(2);
-
         entities.push({
-            id: `arena_closer_${Date.now()}_${uid}`,
+            id: `arena_closer_${Date.now()}_${Math.random()}`,
             name: "Arena Closer",
             type: EntityType.ENEMY, 
             pos: { x, y },
@@ -144,10 +142,9 @@ export class SpawnManager {
             x: (SANDBOX_SIZE * 1.5)/2 + (Math.random() - 0.5) * 500, 
             y: (SANDBOX_SIZE * 1.5)/2 + (Math.random() - 0.5) * 500 
         };
-        const uid = Math.random().toString(36).slice(2);
         
         entities.push({
-            id: `dummy_${uid}`,
+            id: `dummy_${Math.random()}`,
             type: EntityType.ENEMY,
             pos: pos,
             vel: { x: 0, y: 0 },

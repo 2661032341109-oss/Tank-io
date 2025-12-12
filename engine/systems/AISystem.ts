@@ -84,10 +84,8 @@ export class AISystem {
           tierIndex = Math.min(tierIndex, build.path.length - 1);
           const currentClass = build.path[tierIndex];
 
-          const uid = Math.random().toString(36).slice(2);
-
           entities.push({
-              id: `bot_${uid}`,
+              id: `bot_${Math.random()}`,
               name: name,
               type: EntityType.ENEMY,
               pos: getSpawnPos(teamId && !teamId.startsWith('BOT') ? teamId : undefined),
@@ -264,11 +262,10 @@ export class AISystem {
       for(let i=0; i<count; i++) {
           const angle = boss.rotation + (Math.random() - 0.5);
           const vel = { x: Math.cos(angle) * 150, y: Math.sin(angle) * 150 };
-          const uid = Math.random().toString(36).slice(2);
           
           if (type === EntityType.CRASHER) {
               entities.push({
-                id: `minion_${uid}`,
+                id: `minion_${Math.random()}`,
                 type: EntityType.CRASHER,
                 pos: { x: boss.pos.x, y: boss.pos.y },
                 vel: vel,
@@ -288,7 +285,7 @@ export class AISystem {
              });
           } else {
              entities.push({
-                id: `minion_${uid}`,
+                id: `minion_${Math.random()}`,
                 type: EntityType.DRONE,
                 pos: { x: boss.pos.x, y: boss.pos.y },
                 vel: vel,
