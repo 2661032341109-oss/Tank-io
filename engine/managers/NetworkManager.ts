@@ -22,9 +22,9 @@ export class NetworkManager {
     constructor() {}
 
     connect(region: ServerRegion, playerInfo: { name: string; tank: string; mode: GameMode; faction: FactionType }) {
-        console.log(`[NET] Connecting to ${region.name}...`);
+        console.log(`[NET] Connecting to ${region.name} (${playerInfo.mode})...`);
         
-        this.isMockMode = region.type === 'LOCAL';
+        this.isMockMode = region.type === 'LOCAL' || playerInfo.mode === 'SANDBOX';
 
         if (this.isMockMode) {
             this.startMockSimulation();
@@ -37,6 +37,11 @@ export class NetworkManager {
         if (this.playerRef) {
             remove(this.playerRef);
             this.playerRef = null;
+        }
+        if (this.roomRef) {
+            // Detach listeners
+            // In a real app, we'd use 'off', but for this scope we just nullify
+            this.roomRef = null;
         }
         this.isConnected = false;
         console.log("[NET] Disconnected.");
@@ -58,7 +63,6 @@ export class NetworkManager {
     }
 
     // --- REALTIME: Slow Sync (HP, Score, Class) ---
-    // Called from GameEngine.update()
     syncPlayerDetails(health: number, maxHealth: number, score: number, classPath: string) {
         if (this.isMockMode || !this.playerRef) return;
 
@@ -78,7 +82,8 @@ export class NetworkManager {
         if (this.isMockMode) return;
         if (!this.roomRef) return;
 
-        const chatRef = ref(db, 'rooms/public/chat');
+        // Chat is also per-room now
+        const chatRef = ref(db, `${this.roomRef.key}/chat`);
         push(chatRef, {
             sender: sender,
             content: message,
@@ -105,8 +110,10 @@ export class NetworkManager {
         const userId = auth.currentUser ? auth.currentUser.uid : `guest_${Math.random().toString(36).substr(2, 5)}`;
         this.myId = userId;
         
-        // Use a single public room for now
-        const roomPath = 'rooms/public';
+        // CRITICAL: Room separated by Game Mode
+        // This ensures Maze players only see Maze players, etc.
+        const roomPath = `rooms/${playerInfo.mode}`;
+        
         this.roomRef = ref(db, roomPath);
         this.playerRef = ref(db, `${roomPath}/players/${userId}`);
 
@@ -115,24 +122,23 @@ export class NetworkManager {
             id: userId,
             name: playerInfo.name,
             classPath: playerInfo.tank,
-            teamId: playerInfo.faction !== 'NONE' ? playerInfo.faction : userId, // Simple team logic
-            x: Math.random() * 3000, // Random Spawn
+            teamId: playerInfo.faction !== 'NONE' ? playerInfo.faction : userId, 
+            x: Math.random() * 3000, 
             y: Math.random() * 3000,
             r: 0,
             hp: 100,
             maxHp: 100,
             score: 0,
-            color: '#00ccff', // Will be overridden by client logic but good fallback
+            color: '#00ccff',
             timestamp: Date.now()
         };
 
         set(this.playerRef, initialData)
             .then(() => {
                 this.isConnected = true;
-                // Remove me if I disconnect (close tab)
                 onDisconnect(this.playerRef).remove();
                 this.emit('connected', {});
-                console.log("[NET] Joined Firebase Room");
+                console.log(`[NET] Joined Room: ${roomPath}`);
             })
             .catch(err => {
                 console.error("Firebase join error:", err);
@@ -163,7 +169,7 @@ export class NetworkManager {
             this.emit('player_left', { id: data.id });
         });
 
-        // 3. Listen for Updates (Movement + Stats)
+        // 3. Listen for Updates
         onValue(playersRef, (snapshot) => {
             const players = snapshot.val();
             if (!players) return;
@@ -184,7 +190,6 @@ export class NetworkManager {
                 }
             });
             
-            // Format to match WorldSnapshot structure expected by GameEngine
             if (updates.length > 0) {
                 this.emit('world_update', { entities: updates });
             }
@@ -192,11 +197,8 @@ export class NetworkManager {
 
         // 4. Listen for Chat
         const chatRef = ref(db, `${roomPath}/chat`);
-        // Limit to last 1 messages on join to avoid spam, then listen for new
-        // Note: Real implementation might use query constraints
         onChildAdded(chatRef, (snapshot) => {
             const msg = snapshot.val();
-            // Ignore old messages (older than 5 seconds)
             if (Date.now() - msg.timestamp > 5000) return;
             
             this.emit('chat_message', {
@@ -207,9 +209,8 @@ export class NetworkManager {
         });
     }
 
-    // --- MOCK LOGIC ---
     private startMockSimulation() {
-        console.log("[NET] Local Sandbox");
+        console.log("[NET] Local Sandbox / Mock Mode");
         this.isConnected = true;
         setTimeout(() => this.emit('connected', {}), 100);
     }

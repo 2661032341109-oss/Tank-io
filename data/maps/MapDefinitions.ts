@@ -10,6 +10,36 @@ import { WORLD_SIZE, SANDBOX_SIZE, TEAM_COLORS, COLORS } from '../../constants';
 const BASE_PADDING = 600; // Distance from edge for 2-team bases
 const CORNER_SIZE = 1000; // Size of corner bases for 4-teams
 
+// --- STATIC MAZE GENERATION ---
+// We generate a fixed set of walls so everyone sees the same map (No Desync)
+const MAZE_WALLS = [
+    // Center Box (The Nest protection)
+    { x: WORLD_SIZE/2, y: WORLD_SIZE/2 - 800, width: 600, height: 50 },
+    { x: WORLD_SIZE/2, y: WORLD_SIZE/2 + 800, width: 600, height: 50 },
+    { x: WORLD_SIZE/2 - 800, y: WORLD_SIZE/2, width: 50, height: 600 },
+    { x: WORLD_SIZE/2 + 800, y: WORLD_SIZE/2, width: 50, height: 600 },
+
+    // L-Shapes Top Left
+    { x: 1000, y: 1000, width: 50, height: 600 },
+    { x: 1300, y: 700, width: 600, height: 50 },
+
+    // L-Shapes Bottom Right
+    { x: WORLD_SIZE - 1000, y: WORLD_SIZE - 1000, width: 50, height: 600 },
+    { x: WORLD_SIZE - 1300, y: WORLD_SIZE - 700, width: 600, height: 50 },
+
+    // Corridors
+    { x: WORLD_SIZE/2, y: 1200, width: 50, height: 800 },
+    { x: WORLD_SIZE/2, y: WORLD_SIZE - 1200, width: 50, height: 800 },
+    { x: 1200, y: WORLD_SIZE/2, width: 800, height: 50 },
+    { x: WORLD_SIZE - 1200, y: WORLD_SIZE/2, width: 800, height: 50 },
+    
+    // Random scattered blocks (Fixed positions)
+    { x: 2500, y: 1500, width: 200, height: 200 },
+    { x: 1500, y: 3500, width: 200, height: 200 },
+    { x: 3500, y: 1500, width: 200, height: 200 },
+    { x: 3500, y: 3500, width: 200, height: 200 },
+];
+
 export const MAP_DEFINITIONS: Record<GameMode, MapConfig> = {
     
     'FFA': {
@@ -52,19 +82,17 @@ export const MAP_DEFINITIONS: Record<GameMode, MapConfig> = {
         width: WORLD_SIZE,
         height: WORLD_SIZE,
         zones: [],
-        walls: [],
-        generateMaze: true,
+        walls: MAZE_WALLS, // Use Fixed Walls instead of procedural generation
+        generateMaze: false, // Disable random generation
         biomeType: 'DEFAULT'
     },
 
-    // --- SANDBOX MODE (REDESIGNED) ---
-    // Increased size to 6000x6000 to be noticeably larger than standard FFA
+    // --- SANDBOX MODE ---
     'SANDBOX': {
         id: 'SANDBOX',
         width: 6000, 
         height: 6000,
         zones: [
-            // Central Safe Testing Zone (Darker Floor)
             { 
                 x: 3000, 
                 y: 3000, 
@@ -76,15 +104,9 @@ export const MAP_DEFINITIONS: Record<GameMode, MapConfig> = {
             }
         ],
         walls: [
-            // TESTING WALLS: To test bounce/ricochet and wall avoidance
-            // Top Left Corner Box
             { x: 500, y: 500, width: 200, height: 50 },
             { x: 1000, y: 500, width: 50, height: 200 },
-            
-            // Bottom Left Corner Box
             { x: 500, y: 1500, width: 200, height: 200 },
-            
-            // Long Wall for Ricochet
             { x: 2500, y: 1000, width: 50, height: 800 }
         ],
         biomeType: 'SANDBOX'
