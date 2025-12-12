@@ -1,7 +1,7 @@
 
 import { ServerRegion, GameMode, FactionType, Entity, EntityType } from '../../types';
 import { db, auth } from '../../firebase';
-import { DatabaseReference, ref, set, update, remove, onDisconnect, onChildAdded, onChildRemoved, onValue, push, runTransaction, DataSnapshot, child } from "firebase/database";
+import { DatabaseReference, ref, set, update, remove, onDisconnect, onChildAdded, onChildRemoved, onChildChanged, onValue, push, runTransaction, get, child } from "firebase/database";
 
 type NetworkEventHandler = (data: any) => void;
 
@@ -9,7 +9,7 @@ export class NetworkManager {
     private handlers: Record<string, NetworkEventHandler[]> = {};
     public isConnected: boolean = false;
     public isMockMode: boolean = false; 
-    public isHost: boolean = false; // NEW: Am I the server?
+    public isHost: boolean = false; 
     
     private myId: string | null = null;
     private roomRef: DatabaseReference | null = null;
@@ -22,9 +22,10 @@ export class NetworkManager {
     private lastSlowUpdateSendTime: number = 0;
     private lastWorldSyncTime: number = 0;
     
-    private readonly INPUT_RATE = 1000 / 15; // Player moves (15Hz)
-    private readonly SLOW_UPDATE_RATE = 1000; // HP/Score (1Hz)
-    private readonly WORLD_SYNC_RATE = 1000 / 10; // Bot/Shape Sync (10Hz) - Host only
+    // 20 FPS is good balance for Firebase
+    private readonly INPUT_RATE = 1000 / 20; 
+    private readonly SLOW_UPDATE_RATE = 2000;
+    private readonly WORLD_SYNC_RATE = 1000 / 10; 
 
     constructor() {}
 
@@ -46,12 +47,9 @@ export class NetworkManager {
             this.playerRef = null;
         }
         if (this.isHost && this.hostRef) {
-            remove(this.hostRef); // Drop host status
-            // Optionally clear entities so next host starts fresh
+            remove(this.hostRef); 
             if (this.entitiesRef) remove(this.entitiesRef);
         }
-        
-        // Remove all listeners (simplified)
         this.handlers = {};
         this.isConnected = false;
         this.isHost = false;
@@ -59,7 +57,6 @@ export class NetworkManager {
     }
 
     // --- HOST LOGIC ---
-    // Only the Host calls this to update Bots/Shapes for everyone else
     syncWorldEntities(entities: Entity[]) {
         if (!this.isHost || this.isMockMode || !this.entitiesRef) return;
 
@@ -67,37 +64,43 @@ export class NetworkManager {
         if (now - this.lastWorldSyncTime < this.WORLD_SYNC_RATE) return;
         this.lastWorldSyncTime = now;
 
-        // Filter: Only sync Shapes, Crashers, Enemies, and Bosses
-        // Do NOT sync players (they sync themselves) or particles
         const syncData: Record<string, any> = {};
-        
-        entities.forEach(e => {
+        let count = 0;
+        const MAX_ENTITIES_SYNC = 150;
+
+        for (const e of entities) {
+            if (count >= MAX_ENTITIES_SYNC) break;
+
             if (e.type === EntityType.SHAPE || e.type === EntityType.CRASHER || e.type === EntityType.ENEMY || e.type === EntityType.BOSS) {
-                // Optimize: Round numbers to save bandwidth
+                const round = (num: number) => Math.round(num * 10) / 10;
+
                 syncData[e.id] = {
-                    t: e.type, // Type
+                    t: e.type,
                     x: Math.round(e.pos.x),
                     y: Math.round(e.pos.y),
-                    r: parseFloat(e.rotation.toFixed(2)),
+                    // SEND VELOCITY FOR PREDICTION
+                    vx: Math.round(e.vel.x),
+                    vy: Math.round(e.vel.y),
+                    r: round(e.rotation),
                     h: Math.ceil(e.health),
                     m: Math.ceil(e.maxHealth),
-                    c: e.color, // Color
-                    sz: Math.round(e.radius), // Size
-                    bt: (e as any).bossType, // Boss Type
-                    st: (e as any).shapeType, // Shape Type
-                    v: (e as any).variant, // Variant
-                    cp: (e as any).classPath // Bot Class
+                    
+                    ...(e.color ? { c: e.color } : {}),
+                    ...(e.radius ? { sz: Math.round(e.radius) } : {}),
+                    ...((e as any).bossType ? { bt: (e as any).bossType } : {}),
+                    ...((e as any).shapeType ? { st: (e as any).shapeType } : {}),
+                    ...((e as any).variant ? { v: (e as any).variant } : {}),
+                    ...((e as any).classPath ? { cp: (e as any).classPath } : {})
                 };
+                count++;
             }
-        });
-
-        // Use 'set' to replace the world state (Authoritative snapshot)
-        set(this.entitiesRef, syncData).catch(() => {});
+        }
+        set(this.entitiesRef, syncData).catch((e) => console.warn("Sync dropped", e));
     }
 
     // --- CLIENT LOGIC ---
-    // Everyone calls this to send their own position
-    syncPlayerState(pos: {x: number, y: number}, rotation: number) {
+    // UPDATED: Now sends Velocity (vx, vy) for Dead Reckoning
+    syncPlayerState(pos: {x: number, y: number}, vel: {x: number, y: number}, rotation: number) {
         if (this.isMockMode || !this.playerRef) return;
         
         const now = Date.now();
@@ -107,7 +110,9 @@ export class NetworkManager {
         update(this.playerRef, {
             x: Math.round(pos.x),
             y: Math.round(pos.y),
-            r: parseFloat(rotation.toFixed(2))
+            vx: Math.round(vel.x),
+            vy: Math.round(vel.y),
+            r: Number(rotation.toFixed(2))
         }).catch(() => {});
     }
 
@@ -145,103 +150,105 @@ export class NetworkManager {
     // --- FIREBASE SETUP ---
 
     private async startFirebaseConnection(playerInfo: { name: string; tank: string; mode: GameMode; faction: FactionType }) {
-        const userId = auth.currentUser ? auth.currentUser.uid : `guest_${Math.random().toString(36).substr(2, 5)}`;
-        this.myId = userId;
-        
-        // FIXED ROOM: Use a specific region ID so friends always find each other
-        const roomPath = `rooms/${playerInfo.mode}`;
-        
-        this.roomRef = ref(db, roomPath);
-        this.playerRef = ref(db, `${roomPath}/players/${userId}`);
-        this.hostRef = ref(db, `${roomPath}/host`);
-        this.entitiesRef = ref(db, `${roomPath}/world_entities`);
+        try {
+            const userId = auth.currentUser ? auth.currentUser.uid : `guest_${Math.random().toString(36).substr(2, 5)}`;
+            this.myId = userId;
+            
+            const roomPath = `rooms/${playerInfo.mode}`;
+            
+            this.roomRef = ref(db, roomPath);
+            this.playerRef = ref(db, `${roomPath}/players/${userId}`);
+            this.hostRef = ref(db, `${roomPath}/host`);
+            this.entitiesRef = ref(db, `${roomPath}/world_entities`);
 
-        // 1. Try to become Host
-        await this.tryBecomeHost(userId);
+            await this.tryBecomeHost(userId);
 
-        // 2. Set Initial Player Data
-        const initialData = {
-            id: userId,
-            name: playerInfo.name,
-            classPath: playerInfo.tank,
-            teamId: playerInfo.faction !== 'NONE' ? playerInfo.faction : userId, 
-            x: Math.random() * 3000, 
-            y: Math.random() * 3000,
-            r: 0,
-            hp: 100,
-            maxHp: 100,
-            score: 0,
-            color: '#00ccff',
-            timestamp: Date.now()
-        };
+            const initialData = {
+                id: userId,
+                name: playerInfo.name,
+                classPath: playerInfo.tank,
+                teamId: playerInfo.faction !== 'NONE' ? playerInfo.faction : userId, 
+                x: Math.random() * 3000, 
+                y: Math.random() * 3000,
+                vx: 0,
+                vy: 0,
+                r: 0,
+                hp: 100,
+                maxHp: 100,
+                score: 0,
+                color: '#00ccff',
+                timestamp: Date.now()
+            };
 
-        set(this.playerRef, initialData)
-            .then(() => {
-                this.isConnected = true;
-                if (this.playerRef) onDisconnect(this.playerRef).remove();
-                this.emit('connected', { isHost: this.isHost });
-                console.log(`[NET] Joined ${roomPath}. Am I Host? ${this.isHost}`);
-            })
-            .catch(err => {
-                console.error("Join Error:", err);
-                this.emit('error', { message: "Connection Failed" });
-            });
+            await set(this.playerRef, initialData);
+            
+            this.isConnected = true;
+            if (this.playerRef) onDisconnect(this.playerRef).remove();
+            
+            this.emit('connected', { isHost: this.isHost });
+            console.log(`[NET] Joined ${roomPath}. Am I Host? ${this.isHost}`);
 
-        // 3. Listen for Players
-        const playersRef = ref(db, `${roomPath}/players`);
-        
-        onChildAdded(playersRef, (snapshot) => {
-            const data = snapshot.val();
-            if (!data || data.id === this.myId) return;
-            this.emit('player_joined', data);
-        });
+            const playersRef = ref(db, `${roomPath}/players`);
+            
+            const snapshot = await get(playersRef);
+            if (snapshot.exists()) {
+                const players = snapshot.val();
+                Object.values(players).forEach((p: any) => {
+                    if (p.id !== this.myId) this.emit('player_joined', p);
+                });
+            }
 
-        onChildRemoved(playersRef, (snapshot) => {
-            const data = snapshot.val();
-            if (data) this.emit('player_left', { id: data.id });
-        });
-
-        onValue(playersRef, (snapshot) => {
-            const players = snapshot.val();
-            if (!players) return;
-            const updates: any[] = [];
-            Object.values(players).forEach((p: any) => {
-                if (p.id !== this.myId) updates.push(p);
-            });
-            if (updates.length > 0) this.emit('players_update', updates);
-        });
-
-        // 4. Listen for World Entities (Shapes/Bots)
-        // If I am Host, I WRITE this. If I am Client, I READ this.
-        if (!this.isHost) {
-            onValue(this.entitiesRef, (snapshot) => {
+            onChildAdded(playersRef, (snapshot) => {
                 const data = snapshot.val();
-                if (data) {
-                    this.emit('world_snapshot', data);
-                }
+                if (!data || data.id === this.myId) return;
+                this.emit('player_joined', data);
             });
-        }
 
-        // 5. Host Failover (If host disconnects, try to take over)
-        onValue(this.hostRef, (snapshot) => {
-            if (!snapshot.exists() && !this.isHost && this.isConnected) {
-                // Host is gone! Try to claim.
-                this.tryBecomeHost(userId).then(() => {
-                    if (this.isHost) {
-                        this.emit('host_migration', {}); // Tell GameEngine to start spawning
+            onChildRemoved(playersRef, (snapshot) => {
+                const data = snapshot.val();
+                if (data) this.emit('player_left', { id: data.id });
+            });
+
+            onChildChanged(playersRef, (snapshot) => {
+                const data = snapshot.val();
+                if (!data || data.id === this.myId) return;
+                this.emit('players_update', [data]);
+            });
+
+            if (!this.isHost) {
+                onValue(this.entitiesRef, (snapshot) => {
+                    if (!this.isConnected) return;
+                    const data = snapshot.val();
+                    if (data) {
+                        this.emit('world_snapshot', data);
                     }
                 });
             }
-        });
 
-        // 6. Chat
-        const chatRef = ref(db, `${roomPath}/chat`);
-        onChildAdded(chatRef, (snapshot) => {
-            const msg = snapshot.val();
-            if (msg && Date.now() - msg.timestamp < 10000) {
-                this.emit('chat_message', { sender: msg.sender, content: msg.content });
-            }
-        });
+            onValue(this.hostRef, (snapshot) => {
+                if (!this.isConnected) return;
+                if (!snapshot.exists() && !this.isHost) {
+                    this.tryBecomeHost(userId).then(() => {
+                        if (this.isHost) {
+                            this.emit('host_migration', {});
+                        }
+                    });
+                }
+            });
+
+            const chatRef = ref(db, `${roomPath}/chat`);
+            onChildAdded(chatRef, (snapshot) => {
+                if (!this.isConnected) return;
+                const msg = snapshot.val();
+                if (msg && Date.now() - msg.timestamp < 10000) {
+                    this.emit('chat_message', { sender: msg.sender, content: msg.content });
+                }
+            });
+
+        } catch (err: any) {
+            console.error("Connection Critical Failure:", err);
+            this.emit('error', { message: err.message });
+        }
     }
 
     private async tryBecomeHost(userId: string) {
@@ -249,24 +256,23 @@ export class NetworkManager {
         try {
             const result = await runTransaction(this.hostRef, (currentHost) => {
                 if (currentHost === null) {
-                    return userId; // Claim it
+                    return userId; 
                 }
-                return undefined; // Already taken
+                return undefined;
             });
 
             if (result.committed) {
                 this.isHost = true;
-                onDisconnect(this.hostRef).remove(); // If I disconnect, host slot opens
+                onDisconnect(this.hostRef).remove(); 
             }
         } catch (e) {
-            console.warn("Host claim race condition", e);
         }
     }
 
     private startMockSimulation() {
         console.log("[NET] Local Sandbox");
         this.isConnected = true;
-        this.isHost = true; // Local is always host
+        this.isHost = true;
         setTimeout(() => this.emit('connected', { isHost: true }), 100);
     }
 }

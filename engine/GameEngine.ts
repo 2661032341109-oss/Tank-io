@@ -35,14 +35,12 @@ export class GameEngine {
   settings: GameSettings;
   gameMode: GameMode;
   
-  // Systems & Managers
   renderSystem: RenderSystem;
   minimapSystem: MinimapSystem; 
   inputManager: InputManager;
   loopManager: LoopManager;
   statusEffectSystem: StatusEffectSystem;
   
-  // State Managers
   playerManager: PlayerManager;
   notificationManager: NotificationManager;
   leaderboardManager: LeaderboardManager;
@@ -56,12 +54,12 @@ export class GameEngine {
   chatManager: ChatManager;
   networkManager: NetworkManager;
   
-  // Controllers (Logic)
   playerController: PlayerController;
   aiController: AIController;
   worldController: WorldController;
   
   onUpdateStats: (stats: PlayerState) => void;
+  isDestroyed: boolean = false;
 
   constructor(
       canvas: HTMLCanvasElement, 
@@ -78,7 +76,6 @@ export class GameEngine {
     this.gameMode = gameMode;
     this.onUpdateStats = onUpdateStats;
     
-    // 1. Base Systems
     this.renderSystem = new RenderSystem(canvas);
     this.minimapSystem = new MinimapSystem(); 
     if (minimapCanvas) this.minimapSystem.setCanvas(minimapCanvas);
@@ -87,7 +84,6 @@ export class GameEngine {
     this.audioManager = new AudioManager(settings.audio);
     this.statusEffectSystem = new StatusEffectSystem();
     
-    // 2. State Managers
     this.notificationManager = new NotificationManager();
     this.leaderboardManager = new LeaderboardManager();
     this.spawnManager = new SpawnManager();
@@ -96,24 +92,21 @@ export class GameEngine {
     this.statManager = new StatManager();
     this.networkManager = new NetworkManager();
 
-    // Chat Manager wired to Network
     this.chatManager = new ChatManager(
         () => {}, 
         (msg) => this.networkManager.sendChat(msg, playerName)
     );
 
-    // Determine Team
     let playerTeam = undefined;
     if (this.gameMode === 'TEAMS_2' || this.gameMode === 'TEAMS_4') playerTeam = 'BLUE';
 
-    // 3. Player & Death
     this.playerManager = new PlayerManager(
         playerName, 
         playerTeam, 
         onUpdateStats, 
         this.audioManager,
         this.statusEffectSystem,
-        (pos) => { // On Level Up
+        (pos) => {
             PhysicsSystem.spawnFloatingText(this.entityManager.entities, pos, "LEVEL UP!", "#ffd700", true);
             ParticleSystem.spawnLevelUpEffect(this.entityManager.entities, pos, "#ffd700");
         }
@@ -123,6 +116,9 @@ export class GameEngine {
     if (initialClass && initialClass !== 'basic') {
         this.playerManager.evolve(initialClass);
     }
+    
+    MapSystem.generateMap(this.entityManager.entities, this.gameMode);
+    
     this.playerManager.entity.pos = this.entityManager.getSpawnPos(playerTeam);
 
     this.deathManager = new DeathManager(
@@ -133,7 +129,6 @@ export class GameEngine {
         this.settings
     );
 
-    // 4. Controllers
     this.playerController = new PlayerController(this.inputManager, this.playerManager, this.settings, this.canvas, this.audioManager, this.cameraManager); 
     this.aiController = new AIController(this.audioManager, this.statManager, this.statusEffectSystem);
     this.worldController = new WorldController(
@@ -157,21 +152,18 @@ export class GameEngine {
         this.closeArena.bind(this)
     );
 
-    // 5. Loop Manager
     this.loopManager = new LoopManager(
         (dt) => this.update(dt),
         () => this.render()
     );
 
     this.bindExtraEvents();
-    
-    // NOTE: initWorld is now called AFTER connection to determine if Host
     this.bindNetworkEvents();
-    
     this.loopManager.start();
   }
 
   destroy() {
+    this.isDestroyed = true;
     this.loopManager.stop();
     this.inputManager.destroy();
     this.networkManager.disconnect();
@@ -180,19 +172,26 @@ export class GameEngine {
 
   bindNetworkEvents() {
     this.networkManager.on('connected', (data: any) => {
-        // Only initialize world (spawn bots/shapes) if WE are the Host
-        // If we are a client, we wait for 'world_snapshot'
-        this.initWorld(data.isHost);
+        if (this.isDestroyed) return;
+        if (data.isHost) {
+            console.log("[GAME] Connected as HOST - Spawning World");
+            if (this.gameMode === 'SANDBOX') {
+            } else {
+               WorldSystem.spawnShapes(this.entityManager.entities, 80, this.gameMode);
+               AISystem.spawnBots(this.entityManager.entities, 5, this.gameMode, this.entityManager.getSpawnPos.bind(this.entityManager));
+            }
+        } else {
+            console.log("[GAME] Connected as CLIENT - Waiting for snapshot...");
+        }
     });
 
     this.networkManager.on('host_migration', () => {
+        if (this.isDestroyed) return;
         this.notificationManager.push("You are now the Host!", "success");
-        // We just became host, take control of spawning
-        // Existing entities remain, we just start managing new spawns
     });
 
     this.networkManager.on('player_joined', (data) => {
-        // Prevent duplicate player entities
+        if (this.isDestroyed) return;
         if (this.entityManager.entities.some(e => e.id === data.id)) return;
 
         const newPlayer: Entity = {
@@ -201,7 +200,7 @@ export class GameEngine {
             type: EntityType.PLAYER,
             pos: data.x ? {x: data.x, y: data.y} : {x:0, y:0},
             targetPos: data.x ? {x: data.x, y: data.y} : undefined,
-            vel: { x: 0, y: 0 },
+            vel: { x: data.vx || 0, y: data.vy || 0 }, // Init Velocity
             radius: 20,
             rotation: 0,
             color: data.color || COLORS.enemy,
@@ -221,6 +220,7 @@ export class GameEngine {
     });
 
     this.networkManager.on('player_left', (data) => {
+        if (this.isDestroyed) return;
         const idx = this.entityManager.entities.findIndex(e => e.id === data.id);
         if (idx !== -1) {
             const name = this.entityManager.entities[idx].name;
@@ -231,11 +231,14 @@ export class GameEngine {
     });
 
     this.networkManager.on('players_update', (updates: any[]) => {
+        if (this.isDestroyed) return;
         updates.forEach(u => {
             const ent = this.entityManager.entities.find(e => e.id === u.id);
             if (ent) {
-                // Interpolation Target
+                // Interpolation Target with Velocity Injection
                 if (u.x !== undefined) ent.targetPos = { x: u.x, y: u.y };
+                if (u.vx !== undefined) ent.vel.x = u.vx; 
+                if (u.vy !== undefined) ent.vel.y = u.vy;
                 if (u.r !== undefined) ent.rotation = u.r;
                 
                 // State Sync
@@ -245,16 +248,13 @@ export class GameEngine {
                 if (u.classPath !== undefined && ent.classPath !== u.classPath) ent.classPath = u.classPath;
                 if (u.teamId !== undefined) ent.teamId = u.teamId;
             } else {
-                // If we missed the join event, add them now
                 this.networkManager.on('player_joined', u);
             }
         });
     });
 
-    // --- CLIENT: Receive World State from Host ---
     this.networkManager.on('world_snapshot', (snapshot: Record<string, any>) => {
-        // If we are host, ignore incoming snapshots (we are the source of truth)
-        if (this.networkManager.isHost) return;
+        if (this.isDestroyed || this.networkManager.isHost) return;
 
         const serverIds = new Set<string>();
 
@@ -263,19 +263,20 @@ export class GameEngine {
             const existing = this.entityManager.entities.find(e => e.id === id);
             
             if (existing) {
-                // Update existing
                 existing.targetPos = { x: data.x, y: data.y };
+                // Also update velocity for smoother Dead Reckoning
+                if (data.vx !== undefined) existing.vel.x = data.vx;
+                if (data.vy !== undefined) existing.vel.y = data.vy;
+                
                 existing.rotation = data.r;
                 existing.health = data.h;
                 existing.maxHealth = data.m;
-                // Don't overwrite properties that shouldn't change often to save stutter
             } else {
-                // Create new entity from snapshot
                 const newEnt: Entity = {
                     id: id,
                     type: data.t,
                     pos: { x: data.x, y: data.y },
-                    vel: { x: 0, y: 0 },
+                    vel: { x: data.vx || 0, y: data.vy || 0 },
                     radius: data.sz || 15,
                     rotation: data.r,
                     color: data.c,
@@ -283,7 +284,6 @@ export class GameEngine {
                     maxHealth: data.m,
                     damage: 10, 
                     isDead: false,
-                    // Restore specific props
                     bossType: data.bt,
                     shapeType: data.st,
                     variant: data.v,
@@ -293,21 +293,18 @@ export class GameEngine {
             }
         });
 
-        // Clean up entities that are no longer in the snapshot (Desync cleanup)
-        // Only remove Shapes/Bots/Crashers/Bosses. Do NOT remove Players/Particles/Walls.
         for (let i = this.entityManager.entities.length - 1; i >= 0; i--) {
             const e = this.entityManager.entities[i];
             const isSyncable = e.type === EntityType.SHAPE || e.type === EntityType.ENEMY || e.type === EntityType.CRASHER || e.type === EntityType.BOSS;
             
-            // Note: We check if it's a remote entity. Local effects (Particles) stay.
             if (isSyncable && !serverIds.has(e.id)) {
-                // Simple fade out or instant remove?
                 this.entityManager.entities.splice(i, 1);
             }
         }
     });
 
     this.networkManager.on('chat_message', (data) => {
+        if (this.isDestroyed) return;
         if (data.sender !== this.playerManager.entity.name) {
             this.chatManager.addMessage(data.sender, data.content);
         }
@@ -325,33 +322,17 @@ export class GameEngine {
     });
   }
 
-  initWorld(isHost: boolean) {
-      // 1. Generate Static Map (Walls/Zones) - Everyone does this to save bandwidth
-      MapSystem.generateMap(this.entityManager.entities, this.gameMode);
-
-      // 2. Spawn Dynamic Entities (Shapes/Bots) - ONLY IF HOST
-      if (isHost) {
-          console.log("[GAME] Initializing World as HOST");
-          if (this.gameMode === 'SANDBOX') {
-               // Sandbox logic
-          } else {
-               WorldSystem.spawnShapes(this.entityManager.entities, 80, this.gameMode);
-               AISystem.spawnBots(this.entityManager.entities, 5, this.gameMode, this.entityManager.getSpawnPos.bind(this.entityManager));
-          }
-      } else {
-          console.log("[GAME] Initializing World as CLIENT (Waiting for snapshot)");
-      }
-  }
-
   update(dt: number) {
+    if (this.isDestroyed) return;
     const entities = this.entityManager.entities;
     const player = this.playerManager.entity;
 
     this.chatManager.update(dt, entities);
 
-    // --- NETWORKING: Send Position & Details ---
+    // --- NETWORKING: Send Position ---
     if (!player.isDead) {
-        this.networkManager.syncPlayerState(player.pos, player.rotation);
+        // Send velocity with position to help other clients predict movement (Dead Reckoning)
+        this.networkManager.syncPlayerState(player.pos, player.vel, player.rotation);
         this.networkManager.syncPlayerDetails(
             player.health, 
             player.maxHealth, 
@@ -360,16 +341,28 @@ export class GameEngine {
         );
     }
 
-    // --- NETWORKING: If HOST, Sync World State ---
     if (this.networkManager.isHost) {
         this.networkManager.syncWorldEntities(entities);
-        // Also spawn new stuff if needed (SpawnManager handles logic, but strictly checked)
     } else {
-        // If CLIENT, Interpolate received entities
+        // --- CLIENT INTERPOLATION & DEAD RECKONING ---
         entities.forEach(e => {
             if (e.targetPos && e.id !== 'player') {
-                e.pos.x += (e.targetPos.x - e.pos.x) * 0.2; // Smooth Lerp
-                e.pos.y += (e.targetPos.y - e.pos.y) * 0.2;
+                // Dead Reckoning: If the target position is very close, move towards it.
+                // If it's far (lag spike), teleport to avoid ghosting through walls.
+                const dist = Math.hypot(e.targetPos.x - e.pos.x, e.targetPos.y - e.pos.y);
+                
+                if (dist > 300) {
+                    // Teleport if too far desynced
+                    e.pos.x = e.targetPos.x;
+                    e.pos.y = e.targetPos.y;
+                } else {
+                    // Smooth Lerp (Interpolation)
+                    // We blend current position towards target, BUT we also add velocity prediction
+                    // to make it look like it's moving continuously.
+                    const lerpSpeed = 10 * dt;
+                    e.pos.x += (e.targetPos.x - e.pos.x) * lerpSpeed;
+                    e.pos.y += (e.targetPos.y - e.pos.y) * lerpSpeed;
+                }
             }
         });
     }
@@ -392,8 +385,6 @@ export class GameEngine {
         this.playerManager.state.notifications = this.notificationManager.notifications;
     }
     
-    // --- HOST ONLY: Spawning Logic ---
-    // Clients do NOT run spawn logic, they just receive the results
     if (this.networkManager.isHost) {
         this.spawnManager.update(
             dt, entities, player, this.gameMode, 
@@ -408,8 +399,6 @@ export class GameEngine {
         this.playerController.handleFiring(dt, entities, handleHitscan);
     }
     
-    // AI and World Physics run on ALL clients for smoothness, 
-    // BUT Host's position updates will correct any drift via snapshot interpolation.
     this.aiController.update(dt, entities, player, this.cameraManager, handleDeath);
     this.worldController.update(dt, this.playerController.autoSpin, this.cameraManager, handleDeath);
     
@@ -471,7 +460,6 @@ export class GameEngine {
       window.addEventListener('keydown', this.handleKeyDown);
   }
 
-  // ... (Other methods remain same) ...
   spawnBoss(forcedType?: BossType) { if(this.networkManager.isHost) this.spawnManager.spawnBoss(this.entityManager.entities, this.playerManager.entity, this.pushNotification.bind(this), forcedType); }
   closeArena() { if(this.networkManager.isHost) this.spawnManager.closeArena(this.pushNotification.bind(this)); }
   respawn() { 
@@ -485,7 +473,6 @@ export class GameEngine {
   pushNotification(message: string, type: 'info' | 'warning' | 'success' | 'boss' = 'info') { this.notificationManager.push(message, type); }
   executeCommand(cmd: string): string { return this.commandManager.execute(cmd); }
   
-  // Cheats
   cheatLevelUp() { this.playerManager.gainXp(9999999, 1.0); }
   cheatSetLevel(lvl: number) { this.playerManager.setLevel(lvl); }
   cheatMaxStats() { this.playerManager.state.availablePoints += 33; (Object.keys(this.playerManager.state.stats) as StatKey[]).forEach(k => { if(k !== 'critChance' && k !== 'critDamage') this.playerManager.state.stats[k] = 7; }); this.playerManager.emitUpdate(); }

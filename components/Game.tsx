@@ -43,6 +43,7 @@ export const Game: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const minimapRef = useRef<HTMLCanvasElement>(null); 
   const engineRef = useRef<GameEngine | null>(null);
+  const mountedRef = useRef(false); // NEW: prevent race conditions
   
   // Game States
   const [gameState, setGameState] = useState<'LOBBY' | 'CONNECTING' | 'PLAYING' | 'STUDIO'>('LOBBY');
@@ -116,48 +117,67 @@ export const Game: React.FC = () => {
           }
       };
       window.addEventListener('resize', handleResize);
-      handleResize(); 
+      if (gameState === 'PLAYING') handleResize(); 
       return () => window.removeEventListener('resize', handleResize);
   }, [settings.graphics.resolutionScale, gameState]); 
 
+  // --- CRITICAL FIX: Safe Engine Initialization ---
   useEffect(() => {
+    mountedRef.current = true;
+
     // Only init engine when fully in PLAYING state
     if (gameState === 'PLAYING' && canvasRef.current && serverRegion) {
+        
+        // Clean up any existing engine first
         if (engineRef.current) {
+            console.log("[GAME] Cleaning up old engine before spawn");
             engineRef.current.destroy();
+            engineRef.current = null;
         }
 
-        const scale = settings.graphics.resolutionScale || 1.0;
-        canvasRef.current.width = window.innerWidth * scale;
-        canvasRef.current.height = window.innerHeight * scale;
-        
-        const newEngine = new GameEngine(
-            canvasRef.current,
-            settings, 
-            gameMode,
-            playerName,
-            faction,
-            initialClass,
-            (newState) => setPlayerState(newState),
-            minimapRef.current 
-        );
-        
-        // Resume Audio Context on start (Browser Policy)
-        newEngine.audioManager.ctx.resume();
+        // Small timeout to ensure DOM is ready and previous cleanup finished
+        const timer = setTimeout(() => {
+            if (!mountedRef.current || gameState !== 'PLAYING' || !canvasRef.current) return;
 
-        newEngine.networkManager.connect(serverRegion, { name: playerName, tank: initialClass, mode: gameMode, faction: faction });
+            const scale = settings.graphics.resolutionScale || 1.0;
+            canvasRef.current.width = window.innerWidth * scale;
+            canvasRef.current.height = window.innerHeight * scale;
+            
+            console.log("[GAME] Initializing New Engine...");
+            const newEngine = new GameEngine(
+                canvasRef.current,
+                settings, 
+                gameMode,
+                playerName,
+                faction,
+                initialClass,
+                (newState) => {
+                    if (mountedRef.current) setPlayerState(newState);
+                },
+                minimapRef.current 
+            );
+            
+            // Resume Audio Context on start (Browser Policy)
+            newEngine.audioManager.ctx.resume();
 
-        if (isMobile) {
-            newEngine.cameraManager.targetZoom = 0.8;
-            newEngine.cameraManager.currentZoom = 0.8;
-        }
+            newEngine.networkManager.connect(serverRegion, { name: playerName, tank: initialClass, mode: gameMode, faction: faction });
 
-        engineRef.current = newEngine;
-        canvasRef.current.focus();
+            if (isMobile) {
+                newEngine.cameraManager.targetZoom = 0.8;
+                newEngine.cameraManager.currentZoom = 0.8;
+            }
+
+            engineRef.current = newEngine;
+            canvasRef.current.focus();
+        }, 100);
+
+        return () => clearTimeout(timer);
     }
 
     return () => {
+      // Cleanup on unmount or state change
       if (engineRef.current) {
+        console.log("[GAME] Destroying Engine");
         engineRef.current.destroy();
         engineRef.current = null;
       }

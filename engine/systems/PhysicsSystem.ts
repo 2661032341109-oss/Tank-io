@@ -14,21 +14,18 @@ export class PhysicsSystem {
       entities.forEach(ent => {
           if (ent.isDead) return;
 
-          // Decrease Flash Timer
           if (ent.flashTimer && ent.flashTimer > 0) {
               ent.flashTimer -= dt;
           }
 
           ent.prevPos = { ...ent.pos };
 
-          // 1. Calculate Mass & Friction
           const mass = statManager.getEntityMass(ent);
           ent.mass = mass;
 
-          // 2. Physics Integration (Euler)
           let friction = FRICTION;
           const biome = WorldSystem.getBiome(ent.pos);
-          if (biome === BiomeType.ICE) friction = 0.98; // Slide more on ice
+          if (biome === BiomeType.ICE) friction = 0.98;
 
           const frictionFactor = Math.pow(friction, dt * 60);
           
@@ -45,17 +42,13 @@ export class PhysicsSystem {
               ent.vel.y *= 0.95;
           }
 
-          // Update Position
           ent.pos.x += ent.vel.x * dt;
           ent.pos.y += ent.vel.y * dt;
 
-          // 3. Map Boundaries (Dynamic Check)
           if (ent.type === EntityType.PLAYER || ent.type === EntityType.ENEMY || ent.type === EntityType.BOSS) {
-              // Clamp position to map dimensions
               ent.pos.x = Math.max(0, Math.min(mapWidth, ent.pos.x));
               ent.pos.y = Math.max(0, Math.min(mapHeight, ent.pos.y));
               
-              // Handle sticking to edges? (Optional: Kill velocity if hitting wall)
               if (ent.pos.x <= 0 || ent.pos.x >= mapWidth) ent.vel.x = 0;
               if (ent.pos.y <= 0 || ent.pos.y >= mapHeight) ent.vel.y = 0;
 
@@ -79,23 +72,19 @@ export class PhysicsSystem {
               if (ent.type === EntityType.TRAP) { ent.vel.x *= 0.9; ent.vel.y *= 0.9; }
               if (ent.type === EntityType.DRONE) { ent.vel.x *= 0.95; ent.vel.y *= 0.95; }
               
-              // --- ROCKET PROPULSION LOGIC ---
               if (ent.type === EntityType.BULLET && ent.bulletVisual === 'MISSILE') {
-                  // Accelerate in direction of travel
                   const speed = Math.hypot(ent.vel.x, ent.vel.y);
-                  const maxSpeed = 1200; // Terminal velocity for rocket
+                  const maxSpeed = 1200;
                   if (speed < maxSpeed) {
-                      const accel = 1500 * dt; // Acceleration rate
+                      const accel = 1500 * dt;
                       ent.vel.x += Math.cos(ent.rotation) * accel;
                       ent.vel.y += Math.sin(ent.rotation) * accel;
                   }
-                  // Slight wobble for realism
                   if (Math.random() < 0.1) {
                       ent.rotation += (Math.random() - 0.5) * 0.1;
                   }
               }
 
-              // Kill projectiles outside map
               if (ent.pos.x < 0 || ent.pos.x > mapWidth || ent.pos.y < 0 || ent.pos.y > mapHeight) {
                   ent.isDead = true;
               }
@@ -113,7 +102,6 @@ export class PhysicsSystem {
                   const spawnChance = 0.2 + (normalizedSpeed * 0.8);
 
                   for (let i = 0; i < steps; i++) {
-                      // TRAIL CONFIG LOGIC
                       const config = ent.trailConfig;
                       const customRate = config ? (config.rate ?? 0.5) : spawnChance;
                       
@@ -146,7 +134,6 @@ export class PhysicsSystem {
                       } else {
                            ParticleSystem.spawnSmokeTrail(entities, trailPos, particleSize);
                        }
-                       // Break early if no custom trail to save perf on generic bullets
                        if (!ent.bulletVisual && !config && i > 2) break; 
                   }
               }
@@ -164,14 +151,10 @@ export class PhysicsSystem {
           }
           
           if (ent.type === EntityType.FLOATING_TEXT) {
-              // Floating Text Physics: Pop Up and Fall (Arc)
               ent.pos.x += ent.vel.x * dt;
               ent.pos.y += ent.vel.y * dt;
-              
-              ent.vel.x *= 0.95; // Horizontal Drag
-              ent.vel.y += 300 * dt; // Gravity (Fall down slowly)
-
-              // Fade out
+              ent.vel.x *= 0.95;
+              ent.vel.y += 300 * dt;
               ent.opacity = Math.max(0, (ent.lifespan || 0) / 0.8);
               if (ent.lifespan) ent.lifespan -= dt;
               if (ent.lifespan <= 0) ent.isDead = true;
@@ -179,7 +162,6 @@ export class PhysicsSystem {
       });
   }
 
-  // ... (Intersection Methods - Unchanged) ...
   public static intersectLineCircle(p1: Vector2, p2: Vector2, circle: Entity): Vector2 | null {
       const { pos, radius } = circle;
       const d = { x: p2.x - p1.x, y: p2.y - p1.y };
@@ -245,13 +227,10 @@ export class PhysicsSystem {
   ) {
     const allEntities = [...entities, player];
 
-    // ... Standard Collision Detection ...
-    
     for (let i = 0; i < allEntities.length; i++) {
         const entA = allEntities[i];
         if (entA.isDead || entA.type === EntityType.PARTICLE || entA.type === EntityType.FLOATING_TEXT) continue;
         
-        // --- STRICT WALL CHECK ---
         if (entA.type === EntityType.BULLET) {
             const walls = entities.filter(e => e.type === EntityType.WALL);
             for (const wall of walls) {
@@ -265,7 +244,6 @@ export class PhysicsSystem {
         }
         if (entA.isDead) continue;
 
-        // Circle vs Wall (Tanks)
         if (entA.type !== EntityType.WALL && entA.type !== EntityType.BULLET) { 
             const walls = entities.filter(e => e.type === EntityType.WALL);
             for (const wall of walls) {
@@ -299,7 +277,6 @@ export class PhysicsSystem {
             if (entB.isDead || entB.type === EntityType.WALL || entB.type === EntityType.PARTICLE || entB.type === EntityType.FLOATING_TEXT) continue;
             if (entA.type === EntityType.WALL) continue;
             
-            // --- SMART OWNER COLLISION LOGIC ---
             if (entA.ownerId && entB.ownerId && entA.ownerId === entB.ownerId) {
                 if (entA.type === EntityType.BULLET && entB.type === EntityType.BULLET) continue;
                 if (entA.type === EntityType.DRONE && entB.type === EntityType.DRONE) {
@@ -317,9 +294,20 @@ export class PhysicsSystem {
                 continue;
             }
 
-            if (entA.teamId && entB.teamId && entA.teamId === entB.teamId) continue;
             if (entA.id === entB.id || entA.ownerId === entB.id || entB.ownerId === entA.id) continue;
             
+            // --- STRICT FRIENDLY FIRE CHECK ---
+            // If teams match, skip collision entirely for projectiles.
+            // For tanks, we allow collision (pushing) but no damage in processCollision
+            if (entA.teamId && entB.teamId && entA.teamId === entB.teamId) {
+                if (entA.type === EntityType.BULLET || entB.type === EntityType.BULLET || 
+                    entA.type === EntityType.DRONE || entB.type === EntityType.DRONE ||
+                    entA.type === EntityType.TRAP || entB.type === EntityType.TRAP) {
+                    continue; // Projectiles/Drones/Traps pass through teammates
+                }
+                // Tanks continue to collision to push each other
+            }
+
             if (entA.type === EntityType.BULLET && entB.type === EntityType.BULLET) {
                 if (!GAME_RULES.BULLET_TO_BULLET_COLLISION) continue; 
             }
@@ -331,7 +319,6 @@ export class PhysicsSystem {
         }
     }
     
-    // --- PROJECTILE CCD ---
     for (const bullet of entities) {
         if (bullet.type !== EntityType.BULLET || bullet.isDead || !bullet.prevPos) continue;
         
@@ -341,7 +328,10 @@ export class PhysicsSystem {
             if (target.isDead || target.id === bullet.id || target.id === bullet.ownerId) continue;
             if (target.ownerId && bullet.ownerId && target.ownerId === bullet.ownerId) continue;
             if (target.type === EntityType.BULLET && !GAME_RULES.BULLET_TO_BULLET_COLLISION) continue;
+            
+            // --- STRICT FRIENDLY FIRE CHECK (CCD) ---
             if (target.teamId && bullet.teamId && target.teamId === bullet.teamId) continue;
+
             if (target.type === EntityType.PARTICLE || target.type === EntityType.FLOATING_TEXT || target.type === EntityType.ZONE) continue;
             
             let hitPos: Vector2 | null = null;
@@ -360,7 +350,6 @@ export class PhysicsSystem {
     }
   }
 
-  // Helper to apply status effects from bullet to target
   private static applyBulletEffects(bullet: Entity, target: Entity, statusEffectSystem: StatusEffectSystem) {
       if (bullet.bulletType === BulletType.INCENDIARY) {
           statusEffectSystem.apply(target, {
@@ -373,19 +362,22 @@ export class PhysicsSystem {
           statusEffectSystem.apply(target, {
               type: StatusEffectType.SLOW,
               duration: 2.0,
-              slowFactor: 0.4, // 40% slow
+              slowFactor: 0.4,
               sourceId: bullet.ownerId || bullet.id
           });
       }
   }
 
   private static processCollision(entA: Entity, entB: Entity, allEntities: Entity[], player: Entity, activeAbilityTimer: number, onDeath: any, cameraManager: CameraManager, statManager: StatManager, statusEffectSystem: StatusEffectSystem, audioManager?: AudioManager) {
-        // Recalculate masses
         if (!entA.mass) entA.mass = statManager.getEntityMass(entA);
         if (!entB.mass) entB.mass = statManager.getEntityMass(entB);
         
-        let dmgA = entA.damage;
-        let dmgB = entB.damage;
+        // --- STRICT FRIENDLY FIRE CHECK (DAMAGE) ---
+        const isFriendly = entA.teamId && entB.teamId && entA.teamId === entB.teamId;
+
+        // If friendly, NO DAMAGE
+        let dmgA = isFriendly ? 0 : entA.damage;
+        let dmgB = isFriendly ? 0 : entB.damage;
 
         if (entA.isInvulnerable) dmgB = 0;
         if (entB.isInvulnerable) dmgA = 0;
@@ -393,66 +385,61 @@ export class PhysicsSystem {
         const isCritA = entA.isCritical && entA.type === EntityType.BULLET;
         const isCritB = entB.isCritical && entB.type === EntityType.BULLET;
 
-        // --- CRITICAL HIT LOGIC ---
-        if (isCritA) {
+        if (isCritA && !isFriendly) {
             if (audioManager) audioManager.play(SoundType.CRIT, entB.pos, player.pos);
             ParticleSystem.spawnCritHitEffect(allEntities, entB.pos, '#ffd700');
             PhysicsSystem.spawnFloatingText(allEntities, entB.pos, "CRIT!", "#ffd700", true);
             dmgA *= 1.5; 
         }
-        if (isCritB) {
+        if (isCritB && !isFriendly) {
             if (audioManager) audioManager.play(SoundType.CRIT, entA.pos, player.pos);
             ParticleSystem.spawnCritHitEffect(allEntities, entA.pos, '#ffd700');
             PhysicsSystem.spawnFloatingText(allEntities, entA.pos, "CRIT!", "#ffd700", true);
             dmgB *= 1.5; 
         }
 
-        // --- APPLY DAMAGE & SPAWN TEXT ---
         if (dmgB > 0) {
             entA.health -= dmgB;
-            // VISUAL FEEDBACK: Flash White
             entA.flashTimer = 0.1;
-            // VISUAL FEEDBACK: Damage Number
             const isPlayerHit = entA.id === 'player';
             const color = isPlayerHit ? '#ff3333' : (isCritB ? '#ffd700' : '#ffffff');
             PhysicsSystem.spawnFloatingText(allEntities, entA.pos, Math.round(dmgB).toString(), color, isCritB);
         }
         if (dmgA > 0) {
             entB.health -= dmgA;
-            // VISUAL FEEDBACK: Flash White
             entB.flashTimer = 0.1;
-            // VISUAL FEEDBACK: Damage Number
             const isPlayerHit = entB.id === 'player';
             const color = isPlayerHit ? '#ff3333' : (isCritA ? '#ffd700' : '#ffffff');
             PhysicsSystem.spawnFloatingText(allEntities, entB.pos, Math.round(dmgA).toString(), color, isCritA);
         }
         
-        // --- STATUS EFFECTS ---
-        if (entA.type === EntityType.BULLET && entB.type !== EntityType.WALL) {
-            this.applyBulletEffects(entA, entB, statusEffectSystem);
-        }
-        if (entB.type === EntityType.BULLET && entA.type !== EntityType.WALL) {
-            this.applyBulletEffects(entB, entA, statusEffectSystem);
+        if (!isFriendly) {
+            if (entA.type === EntityType.BULLET && entB.type !== EntityType.WALL) {
+                this.applyBulletEffects(entA, entB, statusEffectSystem);
+            }
+            if (entB.type === EntityType.BULLET && entA.type !== EntityType.WALL) {
+                this.applyBulletEffects(entB, entA, statusEffectSystem);
+            }
         }
 
-        // --- NEW: HIGH EXPLOSIVE AREA DAMAGE ---
         const handleExplosion = (source: Entity, center: Vector2) => {
             if (source.bulletType === BulletType.HIGH_EXPLOSIVE && source.explosionRadius) {
                 ParticleSystem.spawnExplosion(allEntities, center, source.color, source.explosionRadius);
                 if (audioManager) audioManager.play(SoundType.EXPLOSION, center, player.pos);
                 
-                // AOE Damage
                 allEntities.forEach(target => {
-                    if (target.isDead || target.id === source.id || target.teamId === source.teamId || target.type === EntityType.PARTICLE) return;
+                    if (target.isDead || target.id === source.id || target.id === source.ownerId || target.type === EntityType.PARTICLE) return;
+                    // AOE FRIENDLY FIRE CHECK
+                    if (target.teamId && source.teamId && target.teamId === source.teamId) return;
+
                     const dist = Math.hypot(target.pos.x - center.x, target.pos.y - center.y);
                     if (dist < source.explosionRadius!) {
                         const falloff = 1 - (dist / source.explosionRadius!);
-                        const aoeDmg = source.damage * 0.5 * falloff; // 50% splash damage
+                        const aoeDmg = source.damage * 0.5 * falloff;
                         target.health -= aoeDmg;
                         target.flashTimer = 0.1;
                         PhysicsSystem.spawnFloatingText(allEntities, target.pos, Math.round(aoeDmg).toString(), '#ffaa00', false);
 
-                        // AOE Knockback
                         target.vel.x += ((target.pos.x - center.x) / dist) * 200 * falloff;
                         target.vel.y += ((target.pos.y - center.y) / dist) * 200 * falloff;
                         
@@ -468,7 +455,6 @@ export class PhysicsSystem {
         if (entA.health <= 0 && entA.type === EntityType.BULLET) handleExplosion(entA, entA.pos);
         if (entB.health <= 0 && entB.type === EntityType.BULLET) handleExplosion(entB, entB.pos);
 
-        // --- PHYSICS RESPONSE ---
         const dist = Math.hypot(entA.pos.x - entB.pos.x, entA.pos.y - entB.pos.y) || 1;
         const overlap = entA.radius + entB.radius - dist;
         const dx = (entA.pos.x - entB.pos.x) / dist;
@@ -480,30 +466,27 @@ export class PhysicsSystem {
             if (isBulletCollision) {
                 ParticleSystem.spawnHitEffect(allEntities, { x: (entA.pos.x + entB.pos.x)/2, y: (entA.pos.y + entB.pos.y)/2 }, '#fff');
             } else {
-                if (!GAME_RULES.ENABLE_KNOCKBACK && (entA.type === EntityType.BULLET || entB.type === EntityType.BULLET)) {
-                     // No knockback
-                } else {
-                    const totalMass = entA.mass + entB.mass;
-                    const rA = entB.mass / totalMass;
-                    const rB = entA.mass / totalMass;
-                    
-                    if (entA.type !== EntityType.WALL) { entA.pos.x += dx * overlap * rA; entA.pos.y += dy * overlap * rA; }
-                    if (entB.type !== EntityType.WALL) { entB.pos.x -= dx * overlap * rB; entB.pos.y -= dy * overlap * rB; }
-                    
-                    if (GAME_RULES.ENABLE_KNOCKBACK) {
-                        const dvx = entA.vel.x - entB.vel.x;
-                        const dvy = entA.vel.y - entB.vel.y;
-                        const velAlongNormal = dvx * dx + dvy * dy;
+                // If friendly units, push them gently but don't damage
+                const totalMass = entA.mass + entB.mass;
+                const rA = entB.mass / totalMass;
+                const rB = entA.mass / totalMass;
+                
+                if (entA.type !== EntityType.WALL) { entA.pos.x += dx * overlap * rA; entA.pos.y += dy * overlap * rA; }
+                if (entB.type !== EntityType.WALL) { entB.pos.x -= dx * overlap * rB; entB.pos.y -= dy * overlap * rB; }
+                
+                if (GAME_RULES.ENABLE_KNOCKBACK) {
+                    const dvx = entA.vel.x - entB.vel.x;
+                    const dvy = entA.vel.y - entB.vel.y;
+                    const velAlongNormal = dvx * dx + dvy * dy;
 
-                        if (velAlongNormal < 0) {
-                            const restitution = 0.2; 
-                            let j = -(1 + restitution) * velAlongNormal;
-                            j /= (1 / entA.mass + 1 / entB.mass);
-                            const impulseX = j * dx;
-                            const impulseY = j * dy;
-                            if (entA.type !== EntityType.WALL) { entA.vel.x += impulseX / entA.mass; entA.vel.y += impulseY / entA.mass; }
-                            if (entB.type !== EntityType.WALL) { entB.vel.x -= impulseX / entB.mass; entB.vel.y -= impulseY / entB.mass; }
-                        }
+                    if (velAlongNormal < 0) {
+                        const restitution = 0.2; 
+                        let j = -(1 + restitution) * velAlongNormal;
+                        j /= (1 / entA.mass + 1 / entB.mass);
+                        const impulseX = j * dx;
+                        const impulseY = j * dy;
+                        if (entA.type !== EntityType.WALL) { entA.vel.x += impulseX / entA.mass; entA.vel.y += impulseY / entA.mass; }
+                        if (entB.type !== EntityType.WALL) { entB.vel.x -= impulseX / entB.mass; entB.vel.y -= impulseY / entB.mass; }
                     }
                 }
             }
@@ -514,7 +497,6 @@ export class PhysicsSystem {
   }
 
   static spawnFloatingText(entities: Entity[], pos: Vector2, text: string, color: string, isBig: boolean = false) {
-      // Add random spread to start position so numbers don't stack perfectly
       const spreadX = (Math.random() - 0.5) * 40;
       const spreadY = (Math.random() - 0.5) * 20;
       
@@ -522,7 +504,7 @@ export class PhysicsSystem {
           id: `text_${Math.random()}`,
           type: EntityType.FLOATING_TEXT,
           pos: { x: pos.x + spreadX, y: pos.y - 20 + spreadY },
-          vel: { x: spreadX * 0.5, y: -150 }, // Initial upward burst
+          vel: { x: spreadX * 0.5, y: -150 },
           radius: 0,
           rotation: 0,
           color: color,
@@ -530,7 +512,7 @@ export class PhysicsSystem {
           health: 1, maxHealth: 1, damage: 0, isDead: false,
           lifespan: 0.8,
           opacity: 1.0,
-          isCritical: isBig // Reuse this flag for scale
+          isCritical: isBig
       });
   }
   
@@ -560,7 +542,10 @@ export class PhysicsSystem {
 
       for (const target of allEntities) {
           if (target.isDead || target.id === owner.id || target.id === owner.ownerId) continue;
+          
+          // --- STRICT FRIENDLY FIRE CHECK (HITSCAN) ---
           if (target.teamId && owner.teamId && target.teamId === owner.teamId) continue; 
+
           if (target.type === EntityType.PARTICLE || target.type === EntityType.FLOATING_TEXT || target.type === EntityType.ZONE) continue;
           
           let hitPos: Vector2 | null = null;
@@ -601,12 +586,11 @@ export class PhysicsSystem {
 
                   target.health -= finalDmg;
                   target.lastDamageTime = Date.now();
-                  target.flashTimer = 0.1; // Flash on hitscan
+                  target.flashTimer = 0.1; 
                   
                   const color = target.id === 'player' ? '#ff3333' : (isCrit ? '#ffd700' : '#ffffff');
                   PhysicsSystem.spawnFloatingText(allEntities, target.pos, Math.round(finalDmg).toString(), color, isCrit);
 
-                  // --- APPLY HITSCAN STATUS EFFECTS ---
                   if (barrel.bulletType === BulletType.INCENDIARY) {
                       statusEffectSystem.apply(target, { type: StatusEffectType.BURN, duration: 3.0, damagePerSecond: 5, sourceId: owner.id });
                   } else if (barrel.bulletType === BulletType.CRYO) {

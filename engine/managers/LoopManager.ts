@@ -1,3 +1,4 @@
+
 export class LoopManager {
     lastTime: number = 0;
     animationFrameId: number | null = null;
@@ -27,12 +28,20 @@ export class LoopManager {
         let dt = (timestamp - this.lastTime) / 1000;
         this.lastTime = timestamp;
         
-        // Cap dt to prevent huge jumps if tab is inactive
+        // --- PREVENTION: Spiral of Death / Tab Throttling ---
+        // If the browser tab was inactive, dt might be huge (e.g., 5 seconds).
+        // Processing 5 seconds of physics in one frame causes massive lag/freezing.
+        // Cap dt to a maximum of 0.1s (100ms) to ensure stability.
         if (dt > 0.1) dt = 0.1;
         if (dt < 0) dt = 0;
 
-        this.onUpdate(dt);
-        this.onRender();
+        try {
+            this.onUpdate(dt);
+            this.onRender();
+        } catch (e) {
+            console.error("Game Loop Error:", e);
+            // Don't crash the whole loop, try to recover next frame
+        }
 
         this.animationFrameId = requestAnimationFrame(this.loop);
     };
